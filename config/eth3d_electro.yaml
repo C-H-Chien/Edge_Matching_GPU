@@ -1,0 +1,33 @@
+# ETH3D Low-Resolution, Multi-View Delivery Area Dataset
+
+# Dataset Details
+dataset_dir: "/oscar/data/bkimia/Datasets"
+output_dir: "./outputs"
+sequence_name: "ETH3D/stereo/electro"
+dataset_type: "ETH3D_stereo"
+
+# Stereo Intrinsic Parameters
+left_camera:
+  resolution: [927, 489]
+  intrinsics: [543.757, 543.757, 520.987, 293.208]
+  distortion_coefficients: [0, 0, 0, 0]
+
+right_camera:
+  resolution: [927, 489]
+  intrinsics: [543.757, 543.757, 520.987, 293.208]
+  distortion_coefficients: [0, 0, 0, 0]
+
+# Stereo Extrinsic Parameters
+stereo:
+  #Left Image to Right Image
+  R21:
+  - [1.000000000000000, 0.000000000000000, 0.000000000000000]
+  - [0.000000000000000, 1.000000000000000, 0.000000000000000]
+  - [0.000000000000000, 0.000000000000000, 1.000000000000000]
+
+  T21: [-0.059891300000001, 0.000000000000001, 0.000000000000001]
+  
+  F21: 
+  - [0.000000000000000,   0.000000000000000,  0.000000000000000]
+  - [0.000000000000000,  0.000000000000000,   0.000110548689097]
+  - [0.000000000000000,  -0.000110548689097,  0.000000000000000]

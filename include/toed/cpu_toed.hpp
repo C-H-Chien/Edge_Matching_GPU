@@ -1,0 +1,117 @@
+#ifndef CPU_TOED_HPP
+#define CPU_TOED_HPP
+
+#include <cmath>
+#include <math.h>
+#include <fstream>
+#include <iostream>
+#include <string.h>
+#include <vector>
+
+#include "indices.hpp"
+#include <omp.h>
+#include <opencv2/opencv.hpp>
+
+// =======================================================================================================
+// class Dataset: Fetch data from dataset specified in the configuration file
+//
+// ChangeLogs
+//    Chien  25-02-08    Imported from the original third-order edge detector.
+//    Jue    25-06-17    Modified for an edge-based structure.
+//
+//> (c) LEMS, Brown University
+//> Chiang-Heng Chien (chiang-heng_chien@brown.edu)
+// =======================================================================================================
+
+struct Edge
+{
+  cv::Point2d location; //> x, y location of the edge point
+  double orientation;   //> orientation of the edge point
+
+  bool b_isEmpty;   //> check if this struct is value-assigned
+  int frame_source; //> which frame this edge comes from
+  int index;        //> index of the edge in the original edge list
+  Edge() : location(cv::Point2d(-1.0, -1.0)), orientation(-100), b_isEmpty(true), frame_source(-1) {}
+  Edge(cv::Point2d location, double orientation, bool b_isEmpty, int frame_source) : location(location), orientation(orientation), b_isEmpty(b_isEmpty), frame_source(frame_source) {}
+
+  bool operator==(const Edge &other) const
+  {
+    // return location.x == other.location.x &&
+    //        location.y == other.location.y &&
+    //        orientation == other.orientation &&
+    //        b_isEmpty == other.b_isEmpty &&
+    //        frame_source == other.frame_source &&
+    //        index == other.index;
+    return frame_source == other.frame_source &&
+           index == other.index;
+  }
+};
+
+namespace std
+{
+  template <>
+  struct hash<Edge>
+  {
+    size_t operator()(const Edge &edge) const
+    {
+      // Combine hash values of all members
+      size_t h1 = hash<double>()(edge.location.x);
+      size_t h2 = hash<double>()(edge.location.y);
+      size_t h3 = hash<double>()(edge.orientation);
+      size_t h4 = hash<bool>()(edge.b_isEmpty);
+      size_t h5 = hash<int>()(edge.frame_source);
+
+      // Simple hash combination
+      return h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h4 << 3) ^ (h5 << 4);
+    }
+  };
+}
+
+class ThirdOrderEdgeDetectionCPU
+{
+  int img_height;
+  int img_width;
+  int interp_img_height;
+  int interp_img_width;
+  int kernel_sz;
+  int shifted_kernel_sz;
+  int g_sig;
+  int interp_n;
+
+  double *img;
+  double *Ix, *Iy;
+  double *I_grad_mag;
+  double *I_orient;
+
+  double *subpix_pos_x_map;    //> store x of subpixel location --
+  double *subpix_pos_y_map;    //> store y of subpixel location --
+  double *subpix_grad_mag_map; //> store subpixel gradient magnitude --
+
+public:
+  double *subpix_edge_pts_final; //> a list of final edge points with all information (Nx4 array, where N is the number of third-order edges)
+  int edge_pt_list_idx;
+  int num_of_edge_data;
+  int omp_threads;
+
+  //> timings
+  double time_conv, time_nms;
+
+  ThirdOrderEdgeDetectionCPU(int, int);
+  ~ThirdOrderEdgeDetectionCPU();
+
+  //> member functions
+  void get_Third_Order_Edges(cv::Mat img);
+  void preprocessing(cv::Mat image);
+  void convolve_img();
+  int non_maximum_suppresion();
+
+  void read_array_from_file(std::string filename, double *rd_data, int first_dim, int second_dim);
+  void write_array_to_file(std::string filename, double *wr_data, int first_dim, int second_dim);
+
+  std::vector<Edge> toed_edges;
+  int Total_Num_Of_TOED;
+
+  typedef std::shared_ptr<ThirdOrderEdgeDetectionCPU> Ptr;
+};
+
+#endif // TOED_HPP
