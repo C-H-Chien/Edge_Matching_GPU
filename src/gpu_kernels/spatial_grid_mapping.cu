@@ -2,6 +2,14 @@
 #define SPATIAL_GRID_MAPPING_CU
 
 #include <cuda_runtime.h>
+#include <cstddef>
+#include <iostream>
+
+#include <thrust/device_ptr.h>
+#include <thrust/fill.h>
+#include <thrust/sequence.h>
+#include <thrust/sort.h>
+
 #include "gpu_kernels.h"
 #include "gpu_settings.h"
 
@@ -67,6 +75,65 @@ void spatial_grid_mapping(
         kernel_args,
         0,
         nullptr));
+}
+
+float edge_spatial_map_thrust_pipeline(
+    int device_id,
+    Edge_GPU* d_left_edges,
+    const Edge_GPU* h_left_edges,
+    std::size_t num_left_edges,
+    Edge_GPU* d_right_edges,
+    const Edge_GPU* h_right_edges,
+    std::size_t num_right_edges,
+    int* d_cell_ids,
+    int* d_edge_indices,
+    int* d_cell_start_idx,
+    int* d_num_of_edges_in_cell,
+    int total_num_of_grid_cells,
+    int num_of_grid_cells_in_width,
+    cudaEvent_t start,
+    cudaEvent_t stop)
+{
+    //> Copy edges data from host to device
+    cudacheck( cudaSetDevice(device_id) );
+    cudacheck( cudaMemcpy( d_left_edges,  h_left_edges,  num_left_edges  * sizeof(Edge_GPU), cudaMemcpyHostToDevice) );
+    cudacheck( cudaMemcpy( d_right_edges, h_right_edges, num_right_edges * sizeof(Edge_GPU), cudaMemcpyHostToDevice) );
+
+    //> Wrap raw pointers in thrust::device_ptr; this allows Thrust to interact with memory allocated via cudaMalloc
+    thrust::device_ptr<int> t_cell_ids(d_cell_ids);
+    thrust::device_ptr<int> t_edge_indices(d_edge_indices);
+    thrust::device_ptr<int> t_cell_start_idx(d_cell_start_idx);
+    thrust::device_ptr<int> t_num_of_edges_in_cell(d_num_of_edges_in_cell);
+
+    //> Initialize arrays using Thrust. By default the cells are empty.
+    thrust::fill(t_cell_start_idx, t_cell_start_idx + total_num_of_grid_cells, 0);
+    thrust::fill(t_num_of_edges_in_cell, t_num_of_edges_in_cell + total_num_of_grid_cells, 0);
+
+    //> Fill edge indices with incremental integers used to track original edges during sort
+    thrust::sequence(t_edge_indices, t_edge_indices + num_right_edges);
+
+    //> Start the CUDA event timer
+    cudacheck(cudaEventRecord(start));
+
+    //> Create and Launch the GPU kernel: assign each right edge a grid cell id based on its location
+    spatial_grid_mapping( device_id, d_right_edges, static_cast<int>(num_right_edges), num_of_grid_cells_in_width, d_cell_ids );
+
+    //> Synchronize the host and device
+    cudacheck(cudaDeviceSynchronize());
+
+    //> End the CUDA event timer
+    float time_spatial_grid_mapping = 0.0f;
+    cudacheck(cudaEventRecord(stop));
+    cudacheck(cudaEventSynchronize(stop));
+    cudacheck(cudaEventElapsedTime(&time_spatial_grid_mapping, start, stop));
+
+    std::cout << "Time for spatial grid mapping: " << time_spatial_grid_mapping << " milliseconds" << std::endl;
+
+    //> Sort the indices using the Cell IDs as the key. This groups all points in Cell 0 together, then Cell 1, etc.
+    //> It rearranges 't_edge_indices' to match the sorted 't_cell_ids'.
+    thrust::sort_by_key(t_cell_ids, t_cell_ids + num_right_edges, t_edge_indices);
+
+    return time_spatial_grid_mapping;
 }
 
 #endif // SPATIAL_GRID_MAPPING_CU

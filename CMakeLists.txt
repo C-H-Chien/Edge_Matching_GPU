@@ -169,7 +169,7 @@ if(USE_GLOGS AND GFLAGS_FOUND AND GFLAGS_LIBRARIES)
 endif()
 
 include_directories(/gpfs/data/bkimia/cchien3/yaml-cpp/bin/include)
-include_directories(${EIGEN3_INCLUDE_DIR})
+include_directories(${EIGEN3_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIR})
 include_directories(/gpfs/data/bkimia/cchien3/opencv-4.7.0/opencv_install/include/opencv4)
 link_directories(/gpfs/data/bkimia/cchien3/yaml-cpp/bin/lib64)
 if(USE_GLOGS AND GLOG_FOUND)

@@ -22,6 +22,7 @@ include_directories(/gpfs/data/bkimia/opencv-4.x/build_install/include/opencv4)
 
 if(ENABLE_CUDA)
     target_link_libraries(lems_vo_slam PUBLIC CUDA::cudart)
+    target_include_directories(lems_vo_slam PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
     set_target_properties(lems_vo_slam PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 endif()
 

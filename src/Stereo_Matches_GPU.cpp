@@ -49,7 +49,9 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
         h_right_edges[i].orientation = current_frame.right_edges[i].orientation;
     }
 
+    num_of_grid_cells_in_height = static_cast<int>(std::ceil(static_cast<double>(img_right_height) / GRID_CELL_SIZE));
     num_of_grid_cells_in_width = static_cast<int>(std::ceil(static_cast<double>(img_right_width) / GRID_CELL_SIZE));
+    total_num_of_grid_cells = num_of_grid_cells_in_width * num_of_grid_cells_in_height;
 
     std::cout << "Right image size: " << img_right_width << " x " << img_right_height << std::endl;
     std::cout << "Number of grid cells in width: " << num_of_grid_cells_in_width << std::endl;
@@ -58,6 +60,10 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     cudacheck( cudaMalloc((void**)&d_left_edges,    num_left_edges_ * sizeof(Edge_GPU))   );
     cudacheck( cudaMalloc((void**)&d_right_edges,   num_right_edges_ * sizeof(Edge_GPU))  );
     cudacheck( cudaMalloc((void**)&d_cell_ids,      num_right_edges_ * sizeof(int))       );
+
+    cudacheck( cudaMalloc((void**)&d_edge_indices,          num_right_edges_ * sizeof(int))        );
+    cudacheck( cudaMalloc((void**)&d_cell_start_idx,        total_num_of_grid_cells * sizeof(int)) );
+    cudacheck( cudaMalloc((void**)&d_num_of_edges_in_cell,  total_num_of_grid_cells * sizeof(int)) );
 
     //> cuda event
     cudacheck( cudaEventCreate(&start) );
@@ -70,37 +76,31 @@ void Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU() {
     GPU_Timing_Statistics GPU_time_collection;
 
     //> For each edge on the right, construct the spatial grid mapping (result is stored in d_cell_ids)
-    GPU_time_collection.time_spatial_grid_mapping = map_spatial_grid_to_edges();
+    GPU_time_collection.time_spatial_grid_mapping = build_edge_spatial_map();
 }
 
-float Stereo_Matches_GPU_Pipeline::map_spatial_grid_to_edges() {
+float Stereo_Matches_GPU_Pipeline::build_edge_spatial_map() {
 
-    //> Copy edges data from host to device
-    cudacheck( cudaMemcpy(d_left_edges,  h_left_edges,  num_left_edges_  * sizeof(Edge_GPU), cudaMemcpyHostToDevice) );
-    cudacheck( cudaMemcpy(d_right_edges, h_right_edges, num_right_edges_ * sizeof(Edge_GPU), cudaMemcpyHostToDevice) );
-
-    //> Start the CUDA event timer
-    cudacheck( cudaEventRecord(start) );
-
-    //> Create and Launch the GPU kernel: assign each right edge a grid cell id based on its location
-    spatial_grid_mapping(device_id, d_right_edges, static_cast<int>(num_right_edges_), num_of_grid_cells_in_width, d_cell_ids);
-
-    //> Synchronize the host and device
-    cudacheck( cudaDeviceSynchronize());
-
-    //> End the CUDA event timer
-    float time_spatial_grid_mapping = 0.0;
-    cudacheck( cudaEventRecord(stop) );
-	cudacheck( cudaEventSynchronize(stop) );
-	cudacheck( cudaEventElapsedTime(&time_spatial_grid_mapping, start, stop) );
-
-    std::cout << "Time for spatial grid mapping: " << time_spatial_grid_mapping << " milliseconds" << std::endl;
-
-    //> Copy cell ids data from device to host
+    //> OLD CODE: Copy cell ids data from device to host
     // cudacheck( cudaMemcpy(h_cell_ids, d_cell_ids, num_right_edges_ * sizeof(int), cudaMemcpyDeviceToHost) );
     // test_spatial_grid_mapping();
 
-    return time_spatial_grid_mapping;
+    return edge_spatial_map_thrust_pipeline(
+        device_id,
+        d_left_edges,
+        h_left_edges,
+        num_left_edges_,
+        d_right_edges,
+        h_right_edges,
+        num_right_edges_,
+        d_cell_ids,
+        d_edge_indices,
+        d_cell_start_idx,
+        d_num_of_edges_in_cell,
+        total_num_of_grid_cells,
+        num_of_grid_cells_in_width,
+        start,
+        stop);
 }
 
 Stereo_Matches_GPU_Pipeline::~Stereo_Matches_GPU_Pipeline()
@@ -112,6 +112,9 @@ Stereo_Matches_GPU_Pipeline::~Stereo_Matches_GPU_Pipeline()
     cudacheck( cudaFree(d_left_edges) );
     cudacheck( cudaFree(d_right_edges) );
     cudacheck( cudaFree(d_cell_ids) );
+    cudacheck( cudaFree(d_edge_indices) );
+    cudacheck( cudaFree(d_cell_start_idx) );
+    cudacheck( cudaFree(d_num_of_edges_in_cell) );
 
     cudacheck(cudaEventDestroy(start));
     cudacheck(cudaEventDestroy(stop));

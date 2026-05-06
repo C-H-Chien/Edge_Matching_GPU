@@ -36,7 +36,7 @@ public:
     //> main function for constructing stereo edge correspondences
     void get_stereo_edge_matching_GPU();
 
-    float map_spatial_grid_to_edges();
+    float build_edge_spatial_map();
 
     int device_id;
     int img_left_height, img_right_height;
@@ -60,8 +60,13 @@ private:
 
     int* h_cell_ids = nullptr;
     int* d_cell_ids = nullptr;
+    int* d_edge_indices = nullptr;
+    int* d_cell_start_idx = nullptr;
+    int* d_num_of_edges_in_cell = nullptr;
 
     int num_of_grid_cells_in_width;
+    int num_of_grid_cells_in_height;
+    int total_num_of_grid_cells;
     size_t num_left_edges_ = 0;
     size_t num_right_edges_ = 0;
 
