@@ -32,6 +32,7 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     //> convert edges to float (double -> float)
     h_left_edges = new Edge_GPU[num_left_edges_];
     h_right_edges = new Edge_GPU[num_right_edges_];
+    h_cell_ids = new int[num_right_edges_];
 
     //> Casting the edges to the proper format for GPU processing
     #pragma omp parallel for
@@ -49,6 +50,9 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     }
 
     num_of_grid_cells_in_width = static_cast<int>(std::ceil(static_cast<double>(img_right_width) / GRID_CELL_SIZE));
+
+    std::cout << "Right image size: " << img_right_width << " x " << img_right_height << std::endl;
+    std::cout << "Number of grid cells in width: " << num_of_grid_cells_in_width << std::endl;
 
     //> Allocate GPU memory
     cudacheck( cudaMalloc((void**)&d_left_edges,    num_left_edges_ * sizeof(Edge_GPU))   );
@@ -78,8 +82,8 @@ float Stereo_Matches_GPU_Pipeline::map_spatial_grid_to_edges() {
     //> Start the CUDA event timer
     cudacheck( cudaEventRecord(start) );
 
-    //> Create and Launch the GPU kernel
-    spatial_grid_mapping(device_id, d_left_edges, static_cast<int>(num_left_edges_), num_of_grid_cells_in_width, d_cell_ids);
+    //> Create and Launch the GPU kernel: assign each right edge a grid cell id based on its location
+    spatial_grid_mapping(device_id, d_right_edges, static_cast<int>(num_right_edges_), num_of_grid_cells_in_width, d_cell_ids);
 
     //> Synchronize the host and device
     cudacheck( cudaDeviceSynchronize());
@@ -91,6 +95,11 @@ float Stereo_Matches_GPU_Pipeline::map_spatial_grid_to_edges() {
 	cudacheck( cudaEventElapsedTime(&time_spatial_grid_mapping, start, stop) );
 
     std::cout << "Time for spatial grid mapping: " << time_spatial_grid_mapping << " milliseconds" << std::endl;
+
+    //> Copy cell ids data from device to host
+    // cudacheck( cudaMemcpy(h_cell_ids, d_cell_ids, num_right_edges_ * sizeof(int), cudaMemcpyDeviceToHost) );
+    // test_spatial_grid_mapping();
+
     return time_spatial_grid_mapping;
 }
 

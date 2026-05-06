@@ -69,6 +69,18 @@ private:
     Eigen::Matrix3f F_left2right_;
     float* F_left2right = nullptr;
 
+    //> TEST functions
+    void test_spatial_grid_mapping() {
+        //> Do a simplet test: randomly pick 10 right edge locations and print the cell ids
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<int> dis(0, num_right_edges_ - 1);
+        for (int i = 0; i < 10; i++) {
+            int random_index = dis(gen);
+            std::cout << "Cell id for right edge " << random_index << " at location (" << h_right_edges[random_index].location_x << ", " << h_right_edges[random_index].location_y << "): " << h_cell_ids[random_index] << std::endl;
+        }
+    }
+
 };
 
 namespace {
