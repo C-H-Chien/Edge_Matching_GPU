@@ -85,6 +85,17 @@ float Stereo_Matches_GPU_Pipeline::build_edge_spatial_map() {
     // cudacheck( cudaMemcpy(h_cell_ids, d_cell_ids, num_right_edges_ * sizeof(int), cudaMemcpyDeviceToHost) );
     // test_spatial_grid_mapping();
 
+    //> Sanity check
+    if (num_left_edges_ <= 0) {
+        LOG_ERROR("Number of edges on the left image is less than or equal to 0 in spatial grid mapping");
+        return -1.0;
+    }
+    if (num_right_edges_ <= 0) {
+        LOG_ERROR("Number of edges on the right image is less than or equal to 0 in spatial grid mapping");
+        return -1.0;
+    }
+
+    //> Build edge spatial map
     return edge_spatial_map_thrust_pipeline(
         device_id,
         d_left_edges,
