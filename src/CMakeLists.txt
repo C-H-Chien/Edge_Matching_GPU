@@ -7,10 +7,23 @@ set (control_sources
         Temporal_Matches.cpp
         Stereo_Iterator.cpp
         EdgeClusterer.cpp
+
+        Stereo_Matches_GPU.cpp
 )
+
+if(ENABLE_CUDA)
+    list(APPEND control_sources
+        gpu_kernels/spatial_grid_mapping.cu
+    )
+endif()
 
 add_library( lems_vo_slam ${control_sources} )
 include_directories(/gpfs/data/bkimia/opencv-4.x/build_install/include/opencv4)
+
+if(ENABLE_CUDA)
+    target_link_libraries(lems_vo_slam PUBLIC CUDA::cudart)
+    set_target_properties(lems_vo_slam PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+endif()
 
 #> Linking third-party libraries
 target_link_libraries(lems_vo_slam
@@ -18,6 +31,8 @@ target_link_libraries(lems_vo_slam
     -L/gpfs/data/bkimia/cchien3/yaml-cpp/bin/lib64 yaml-cpp
     ${THIRD_PARTY_LIBS}
 )
+
+set_target_properties(lems_vo_slam PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
 # Add optional glog and gflags linking if found and enabled
 if(USE_GLOGS AND GLOG_FOUND AND GLOG_LIBRARIES)

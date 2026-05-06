@@ -120,40 +120,39 @@ void Pipeline::prepare_Stereo_Images()
 
 void Pipeline::get_Stereo_Edge_Correspondences()
 {
-    //> Set the stereo left constructor
-    set_Stereo_Left_Constructor();
-    Timing_Statistics stereo_timing_statistics;
-
-    //> For each left edge, get the corresponding GT location (not right edge) on the right image, and the triangulated 3D point in the left camera coordinate
-    //> For dataset without GT, we still need these functions to set up `current_frame_stereo_left_constructor` but we will not use the GT locations
-    stereo_matches_engine->Find_Stereo_GT_Locations(dataset_, current_frame.left_disparity_map, current_frame, current_frame_stereo_left_constructor, true);
-    //> Construct a GT stereo edge pool
-    stereo_matches_engine->get_Stereo_Edge_GT_Pairs(dataset_, current_frame, current_frame_stereo_left_constructor, true);
-
-    //> construct stereo edge correspondences for the current_frame
-    Frame_Evaluation_Metrics metrics = stereo_matches_engine->get_Stereo_Edge_Pairs(dataset_, current_frame_stereo_left_constructor, stereo_current_frame_idx, stereo_timing_statistics);
-    //> Only accumulate evaluation metrics when GT is available
-    if (dataset_->has_gt()) {
-        all_stereo_matches_metrics.push_back(metrics);
-    }
-
-    //> Finalize the stereo edge pairs for the current_frame
-    stereo_matches_engine->finalize_stereo_edge_mates(current_frame_stereo_left_constructor, current_frame_stereo_edge_mates);
+    stereo_matches_engine_GPU = std::make_shared<Stereo_Matches_GPU_Pipeline>(dataset_, current_frame, DEVICE_ID);
+    stereo_matches_engine_GPU->get_stereo_edge_matching_GPU();
     
-    // stereo_matches_engine->write_finalized_stereo_edge_pairs_to_file(dataset_, current_frame_stereo_edge_mates, stereo_current_frame_idx);
+    // //> Set the stereo left constructor
+    // set_Stereo_Left_Constructor();
+    // Timing_Statistics stereo_timing_statistics;
+
+    // //> For each left edge, get the corresponding GT location (not right edge) on the right image, and the triangulated 3D point in the left camera coordinate
+    // //> For dataset without GT, we still need these functions to set up `current_frame_stereo_left_constructor` but we will not use the GT locations
+    // stereo_matches_engine->Find_Stereo_GT_Locations(dataset_, current_frame.left_disparity_map, current_frame, current_frame_stereo_left_constructor, true);
+    // //> Construct a GT stereo edge pool
+    // stereo_matches_engine->get_Stereo_Edge_GT_Pairs(dataset_, current_frame, current_frame_stereo_left_constructor, true);
+
+    // //> construct stereo edge correspondences for the current_frame
+    // Frame_Evaluation_Metrics metrics = stereo_matches_engine->get_Stereo_Edge_Pairs(dataset_, current_frame_stereo_left_constructor, stereo_current_frame_idx, stereo_timing_statistics);
+    // //> Only accumulate evaluation metrics when GT is available
+    // if (dataset_->has_gt()) {
+    //     all_stereo_matches_metrics.push_back(metrics);
+    // }
+
+    // //> Finalize the stereo edge pairs for the current_frame
+    // stereo_matches_engine->finalize_stereo_edge_mates(current_frame_stereo_left_constructor, current_frame_stereo_edge_mates);
+    
+    // // stereo_matches_engine->write_finalized_stereo_edge_pairs_to_file(dataset_, current_frame_stereo_edge_mates, stereo_current_frame_idx);
 
     //> If the current frame is the first frame, make current frame the keyframe
     if (get_Current_Frame_Index() == 0)
     {
-        //> The pose of the first frame is the identity pose
-        current_frame.estimated_camera_pose = Camera_Pose(Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
-        
-        // estimated_poses.push_back(current_frame.gt_camera_pose);
-        // cumulated_poses.push_back(current_frame.gt_camera_pose);
         set_Keyframe();
         increment_Current_Stereo_Frame_Index();
         status_ = PipelineStatus::STATUS_IMG_PREPARATION;
         send_control_to_main = true;
+        b_end_pipeline_for_debug = true;
     }
     else
     {

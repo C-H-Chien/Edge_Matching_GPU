@@ -17,6 +17,7 @@
 #include "utility.h"
 #include "Stereo_Matches.h"
 #include "Temporal_Matches.h"
+#include "Stereo_Matches_GPU.h"
 
 //> status of the visual odometry pipeline
 enum class PipelineStatus
@@ -214,6 +215,7 @@ private:
     Stereo_Matches::Ptr stereo_matches_engine = nullptr;
     Temporal_Matches::Ptr temporal_matches_engine = nullptr;
     Utility::Ptr utility_tool = nullptr;
+    Stereo_Matches_GPU_Pipeline::Ptr stereo_matches_engine_GPU = nullptr;
 
     //> file stream for writing timing statistics
     std::ofstream timing_statistics_file;
