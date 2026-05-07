@@ -16,6 +16,7 @@ if(ENABLE_CUDA)
     list(APPEND control_sources
         gpu_kernels/spatial_grid_mapping.cu
         gpu_kernels/epipolar_rasterization.cu
+        gpu_kernels/precompute_left_edge_patches_photometry.cu
     )
 endif()
 

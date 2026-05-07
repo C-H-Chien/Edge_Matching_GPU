@@ -49,6 +49,12 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     h_cell_ids = new int[num_right_edges_];
     h_matches_out = new Match_by_Edge_Index[max_stereo_edge_matches_after_epipolar_rasterization];
 
+    //> flatten the images
+    h_left_img = new float[img_left_width * img_left_height];
+    h_right_img = new float[img_right_width * img_right_height];
+    memcpy(h_left_img, current_frame.left_image.data, img_left_width * img_left_height * sizeof(float));
+    memcpy(h_right_img, current_frame.right_image.data, img_right_width * img_right_height * sizeof(float));
+
     //> Casting the edges to the proper format for GPU processing
     #pragma omp parallel for
     for (size_t i = 0; i < num_left_edges_; i++) {
@@ -145,6 +151,9 @@ void Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU() {
     #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
     test_epipolar_rasterization();
     #endif
+
+    //> Precompute the left edge patches photometry
+    GPU_time_collection.time_precompute_left_edge_patches_photometry = precompute_left_edge_patches_photometry();
 }
 
 float Stereo_Matches_GPU_Pipeline::build_edge_spatial_map() {
@@ -193,6 +202,20 @@ float Stereo_Matches_GPU_Pipeline::rasterize_epipolar_band_for_matches() {
         stop);
 }
 
+float Stereo_Matches_GPU_Pipeline::precompute_left_edge_patches_photometry() {
+    return precompute_left_edge_patches_photometry_pipeline(
+        device_id,
+        h_left_img,
+        d_left_patches,
+        d_left_edges,
+        img_left_width,
+        img_left_height,
+        num_left_edges_,
+        start,
+        stop
+    );
+}
+
 Stereo_Matches_GPU_Test_Context Stereo_Matches_GPU_Pipeline::make_test_context() const
 {
     Stereo_Matches_GPU_Test_Context ctx;
@@ -224,6 +247,8 @@ void Stereo_Matches_GPU_Pipeline::test_epipolar_rasterization() const {
 Stereo_Matches_GPU_Pipeline::~Stereo_Matches_GPU_Pipeline()
 {
     //> Note that h_F aliases h_F_.data(), so Eigen frees that storage when h_F_ is destroyed. No need to delete[] h_F.
+    delete[] h_left_img;
+    delete[] h_right_img;
     delete[] h_left_edges;
     delete[] h_right_edges;
     delete[] h_cell_ids;
@@ -238,6 +263,7 @@ Stereo_Matches_GPU_Pipeline::~Stereo_Matches_GPU_Pipeline()
     cudacheck( cudaFree(d_num_of_edges_in_cell) );
     cudacheck( cudaFree(d_matches) );
     cudacheck( cudaFree(d_match_count) );
+    cudacheck( cudaFree(d_left_patches) );
 
     cudacheck(cudaEventDestroy(start));
     cudacheck(cudaEventDestroy(stop));

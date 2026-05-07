@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string>
 #include "definitions.h"
+#include "gpu_settings.h"
 
 //> Helper Edge structure
 struct Edge_GPU { 
@@ -22,6 +23,23 @@ struct Point2D_GPU {
 struct Match_by_Edge_Index { 
     int left_edge_idx;
     int right_edge_idx; 
+};
+
+//> CUDA texture wrapper holds the GPU texture object and its underlying array
+struct CUDA_Texture_Wrapper {
+    cudaArray_t array;
+    cudaTextureObject_t texObj;
+};
+
+//> The left edge patches are pre-computed and stored in global memory
+struct Precomputed_Edge_Patches_Photometry {
+    float pL_plus[TOTAL_NUM_OF_PATCH_PIXELS];
+    float mL_plus; //> mean
+    float vL_plus; //> standard deviation
+    
+    float pL_minus[TOTAL_NUM_OF_PATCH_PIXELS];
+    float mL_minus; //> mean
+    float vL_minus; //> standard deviation
 };
 
 //> Thrust + GPU kernel + sort pipeline for spatial grid mapping (defined in spatial_grid_mapping.cu)
@@ -71,6 +89,22 @@ float epipolar_rasterization_thick_band_pipeline(
     int                     max_matches,
     cudaEvent_t             start,
     cudaEvent_t             stop
+);
+
+//> GPU kernel pipeline for precompute left edge patches photometry (defined in precompute_left_edge_patches_photometry.cu)
+float precompute_left_edge_patches_photometry_pipeline(
+    int             device_id,
+    /* Data live in the host memory */
+    float*          h_left_img,
+    /* Data live in the device memory */
+    Precomputed_Edge_Patches_Photometry* &d_left_patches,
+    Edge_GPU*       d_left_edges,
+    /* Others */
+    int             img_width,
+    int             img_height,
+    std::size_t     num_of_left_edges,
+    cudaEvent_t     start,
+    cudaEvent_t     stop
 );
 
 #endif // GPU_KERNELS_H

@@ -20,6 +20,8 @@ struct GPU_Timing_Statistics
 {
     float time_spatial_grid_mapping;
     float time_epipolar_rasterization;
+    float time_precompute_left_edge_patches_photometry;
+    float time_apply_NCC_filter;
 };
 
 class Stereo_Matches_GPU_Pipeline {
@@ -35,6 +37,7 @@ public:
 
     float build_edge_spatial_map();
     float rasterize_epipolar_band_for_matches();
+    float precompute_left_edge_patches_photometry();
 
     int device_id;
     int img_left_height, img_right_height;
@@ -50,6 +53,8 @@ public:
 
 private:
     //> Pointers to the host memory
+    float* h_left_img = nullptr;
+    float* h_right_img = nullptr;
     Edge_GPU* h_left_edges = nullptr;
     Edge_GPU* h_right_edges = nullptr;
     int* h_cell_ids = nullptr;
@@ -67,6 +72,7 @@ private:
     int* d_match_count = nullptr;
     Match_by_Edge_Index* d_matches = nullptr;
     float* d_F = nullptr;
+    Precomputed_Edge_Patches_Photometry* d_left_patches;
 
     int num_of_grid_cells_in_width;
     int num_of_grid_cells_in_height;
