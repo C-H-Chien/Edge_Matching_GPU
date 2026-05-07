@@ -1,0 +1,363 @@
+#ifndef EPIPOLAR_RASTERIZATION_CU
+#define EPIPOLAR_RASTERIZATION_CU
+
+#include <cuda_runtime.h>
+#include <cstddef>
+#include <iostream>
+
+#include "definitions.h"
+#include "gpu_kernels.h"
+#include "gpu_settings.h"
+#include "gpu_helpers/get_epipolar_line_end_points.cuh"
+#include "gpu_helpers/eval_edges_in_grid_cells.cuh"
+
+// __global__ 
+// void 
+// epipolar_rasterization_kernel(
+//     const Edge_GPU* d_left_edges,       //> Left edge array
+//     const Edge_GPU* d_right_edges,      //> Right edge array
+//     const int* d_edge_indices,          //> Pointer from Thrust (sorted right edge indices)
+//     const int* d_cell_start_idx,        //> Pointer from Thrust (start index of the right edge indices in each grid cell)
+//     const int* d_num_of_edges_in_cell,  //> Pointer from Thrust (number of right edge indices in each grid cell)
+//     const float* d_F,                   //> Fundamental matrix (3x3, flattened to 9 floats)
+//     int num_of_left_edges,              //> Number of left edges
+//     int img_right_W, int img_right_H,   //> Width and height of the right image
+//     int num_of_grid_cells_in_width,     //> Number of grid cells in the image width
+//     int num_of_grid_cells_in_height,    //> Number of grid cells in the image height
+//     Match_by_Edge_Index* d_matches,     //> Output buffer
+//     int* d_match_count,                 //> Global atomic counter for outputs
+//     int max_matches)                    //> To prevent buffer overflow (max number of matches)
+// {
+//     //> One thread per left edge
+//     int left_edge_idx = blockIdx.x * blockDim.x + threadIdx.x;
+//     if (left_edge_idx >= num_of_left_edges) return;
+
+//     Edge_GPU left_edge = d_left_edges[left_edge_idx];
+
+//     //> Compute Epipolar Line: l_R = F * x_L
+//     float a = d_F[0] * left_edge.location_x + d_F[1] * left_edge.location_y + d_F[2];
+//     float b = d_F[3] * left_edge.location_x + d_F[4] * left_edge.location_y + d_F[5];
+//     float c = d_F[6] * left_edge.location_x + d_F[7] * left_edge.location_y + d_F[8];
+
+//     //> Normalize line equation so ax + by + c directly yields geometric distance
+//     float norm = sqrtf(a * a + b * b);
+//     if (norm < 1e-6f) return; //> Invalid line
+//     a /= norm; b /= norm; c /= norm;
+
+//     //> Find the intersection points of the epipolar line with the image boundaries
+//     float x0, y0, x1, y1;
+//     if (!get_epipolar_line_endpoints(a, b, c, img_right_W, img_right_H, x0, y0, x1, y1)) return;
+
+//     //> Setup variables for the digital differential analyzer (DDA) grid cell traversal
+//     int cx = (int)(x0 / GRID_CELL_SIZE);
+//     int cy = (int)(y0 / GRID_CELL_SIZE);
+//     int end_cx = (int)(x1 / GRID_CELL_SIZE);
+//     int end_cy = (int)(y1 / GRID_CELL_SIZE);
+
+//     //> Clamp initial cells to grid boundaries
+//     cx = max(0, min(cx, num_of_grid_cells_in_width - 1));
+//     cy = max(0, min(cy, num_of_grid_cells_in_height - 1));
+//     end_cx = max(0, min(end_cx, num_of_grid_cells_in_width - 1));
+//     end_cy = max(0, min(end_cy, num_of_grid_cells_in_height - 1));
+
+//     float dx = x1 - x0;
+//     float dy = y1 - y0;
+
+//     int stepX = (dx > 0) ? 1 : ((dx < 0) ? -1 : 0);
+//     int stepY = (dy > 0) ? 1 : ((dy < 0) ? -1 : 0);
+
+//     //> tDelta is the distance along the ray to cross one cell horizontally/vertically
+//     float tDeltaX = (stepX != 0) ? fabsf(GRID_CELL_SIZE / dx) : 1e30f;
+//     float tDeltaY = (stepY != 0) ? fabsf(GRID_CELL_SIZE / dy) : 1e30f;
+
+//     //> tMax is the distance along the ray to the FIRST cell boundary
+//     float cell_boundary_x = (cx + (stepX > 0 ? 1 : 0)) * GRID_CELL_SIZE;
+//     float cell_boundary_y = (cy + (stepY > 0 ? 1 : 0)) * GRID_CELL_SIZE;
+    
+//     float tMaxX = (stepX != 0) ? fabsf((cell_boundary_x - x0) / dx) : 1e30f;
+//     float tMaxY = (stepY != 0) ? fabsf((cell_boundary_y - y0) / dy) : 1e30f;
+
+//     //> Grid traversal loop for rasterization
+//     bool reached_end = false;
+    
+//     while (!reached_end) {
+//         //> the current grid cell id
+//         int cell_id = cy * num_of_grid_cells_in_width + cx;
+        
+//         int start_idx = d_cell_start_idx[cell_id];
+//         int count = d_num_of_edges_in_cell[cell_id];
+
+//         for (int i = 0; i < count; i++) {
+//             //> Memory Lookup: Get the original index, then the actual point
+//             int right_edge_idx = d_edge_indices[start_idx + i];
+//             Edge_GPU right_edge = d_right_edges[right_edge_idx];
+
+//             if (left_edge.location_x < right_edge.location_x) continue;
+
+//             //> Calculate exact perpendicular distance
+//             float dist_to_epipolar_line = fabsf(a * right_edge.location_x + b * right_edge.location_y + c);
+//             //> squared distance between left and right edges
+//             float disparity_squared = (left_edge.location_x - right_edge.location_x) * (left_edge.location_x - right_edge.location_x) + \
+//                                       (left_edge.location_y - right_edge.location_y) * (left_edge.location_y - right_edge.location_y);
+
+//             //> EP and LP filters
+//             if (dist_to_epipolar_line < EPIPOLAR_LINE_DIST_THRESH && disparity_squared < MAX_DISPARITY * MAX_DISPARITY) {
+
+//                 //> Atomically add the match to the output list when a match is found
+//                 int insert_pos = atomicAdd(d_match_count, 1);
+//                 if (insert_pos < max_matches) {
+//                     d_matches[insert_pos].left_edge_idx = left_edge_idx;
+//                     d_matches[insert_pos].right_edge_idx = right_edge_idx;
+//                 }
+//             }
+//         }
+
+//         //> Advance to the next cell 
+//         if (cx == end_cx && cy == end_cy) {
+//             reached_end = true;
+//         } 
+//         else {
+//             if (tMaxX < tMaxY) {
+//                 tMaxX += tDeltaX;
+//                 cx += stepX;
+//             } 
+//             else {
+//                 tMaxY += tDeltaY;
+//                 cy += stepY;
+//             }
+
+//             //> Safety break if we step out of grid bounds due to float numerical precision
+//             if (cx < 0 || cx >= num_of_grid_cells_in_width || cy < 0 || cy >= num_of_grid_cells_in_height)
+//                 break;
+//         }
+//     }
+// }
+
+__global__ void epipolar_rasterization_thick_band_kernel(
+    const Edge_GPU* d_left_edges,       //> Left edge array
+    const Edge_GPU* d_right_edges,      //> Right edge array 
+    const int* d_edge_indices,          //> Pointer from Thrust (sorted right edge indices)
+    const int* d_cell_start_idx,        //> Pointer from Thrust (start index of the right edge indices in each grid cell)
+    const int* d_num_of_edges_in_cell,  //> Pointer from Thrust (number of right edge indices in each grid cell)
+    const float* d_F,                   //> Fundamental matrix (3x3, flattened to 9 floats)
+    int num_of_left_edges,              //> Number of left edges
+    int img_right_W, int img_right_H,   //> Width and height of the right image
+    int num_of_grid_cells_in_width,     //> Number of grid cells in the image width
+    int num_of_grid_cells_in_height,    //> Number of grid cells in the image height
+    Match_by_Edge_Index* d_matches,     //> Output buffer
+    int* d_match_count,                 //> Global atomic counter for outputs
+    int max_matches)                    //> To prevent buffer overflow (max number of matches)
+{
+    int left_edge_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (left_edge_idx >= num_of_left_edges) return;
+
+    Edge_GPU left_edge = d_left_edges[left_edge_idx];
+
+    //> Compute and normalize epipolar line
+    float a = d_F[0] * left_edge.location_x + d_F[1] * left_edge.location_y + d_F[2];
+    float b = d_F[3] * left_edge.location_x + d_F[4] * left_edge.location_y + d_F[5];
+    float c = d_F[6] * left_edge.location_x + d_F[7] * left_edge.location_y + d_F[8];
+
+    float norm = sqrtf(a * a + b * b);
+    if (norm < 1e-6f) return; 
+    a /= norm; b /= norm; c /= norm;
+
+    //> Find intersection points with the image boundaries
+    float x0, y0, x1, y1;
+    if (!get_epipolar_line_endpoints(a, b, c, img_right_W, img_right_H, x0, y0, x1, y1)) return;
+
+    //> Core idea: major-axis thick band traversal
+    if (fabsf(b) > fabsf(a)) {
+        //> If the epipolar line is more horizontal, perform x-major traversal
+        
+        //> Find grid column boundaries
+        int cx_0 = max(0, min((int)(x0 / GRID_CELL_SIZE), num_of_grid_cells_in_width - 1));
+        int cx_1 = max(0, min((int)(x1 / GRID_CELL_SIZE), num_of_grid_cells_in_width - 1));
+        int start_cx = min(cx_0, cx_1);
+        int end_cx = max(cx_0, cx_1);
+        
+        //> Compute how much the epipolar line needs to expand vertically to cover the thick band
+        float vertical_expansion = EPIPOLAR_LINE_DIST_THRESH / fabsf(b);
+
+        for (int cx = start_cx; cx <= end_cx; cx++) {
+            float x_left = cx * GRID_CELL_SIZE;
+            float x_right = (cx + 1) * GRID_CELL_SIZE;
+            
+            //> Get the y coordinates where the line enters and exits this column
+            float y_left = (-a * x_left - c) / b;
+            float y_right = (-a * x_right - c) / b;
+            
+            //> Expand the bounding box by the thickness
+            float y_min = fminf(y_left, y_right) - vertical_expansion;
+            float y_max = fmaxf(y_left, y_right) + vertical_expansion;
+            
+            //> Convert to cell indices; adopting floorf to handle negative values safely before clamping
+            int cy_start = max(0, (int)floorf(y_min / GRID_CELL_SIZE));
+            int cy_end = min(num_of_grid_cells_in_height - 1, (int)floorf(y_max / GRID_CELL_SIZE));
+            
+            //> Evaluate edges in the grid cells
+            for (int cy = cy_start; cy <= cy_end; cy++) {
+                eval_edges_in_grid_cells(left_edge, cx, cy, num_of_grid_cells_in_width, left_edge_idx, a, b, c, 
+                                   d_right_edges, d_edge_indices, d_cell_start_idx, d_num_of_edges_in_cell, 
+                                   d_matches, d_match_count, max_matches);
+            }
+        }
+    } 
+    else {
+        //> If the epipolar line is more vertical, perform y-major traversal
+        
+        //> Find grid row boundaries
+        int cy_0 = max(0, min((int)(y0 / GRID_CELL_SIZE), num_of_grid_cells_in_height - 1));
+        int cy_1 = max(0, min((int)(y1 / GRID_CELL_SIZE), num_of_grid_cells_in_height - 1));
+        int start_cy = min(cy_0, cy_1);
+        int end_cy = max(cy_0, cy_1);
+        
+        //> Compute how much the epipolar line needs to expand horizontally to cover the thick band
+        float horizontal_expansion = EPIPOLAR_LINE_DIST_THRESH / fabsf(a);
+
+        for (int cy = start_cy; cy <= end_cy; cy++) {
+            float y_top = cy * GRID_CELL_SIZE;
+            float y_bottom = (cy + 1) * GRID_CELL_SIZE;
+            
+            //> Get the x coordinates where the line enters and exits this row
+            float x_top = (-b * y_top - c) / a;
+            float x_bottom = (-b * y_bottom - c) / a;
+            
+            //> Expand the bounding box by the thickness
+            float x_min = fminf(x_top, x_bottom) - horizontal_expansion;
+            float x_max = fmaxf(x_top, x_bottom) + horizontal_expansion;
+            
+            //> Convert to cell indices; adopting floorf to handle negative values safely before clamping
+            int cx_start = max(0, (int)floorf(x_min / GRID_CELL_SIZE));
+            int cx_end = min(num_of_grid_cells_in_width - 1, (int)floorf(x_max / GRID_CELL_SIZE));
+            
+            //> Evaluate edges in the grid cells
+            for (int cx = cx_start; cx <= cx_end; cx++) {
+                eval_edges_in_grid_cells(left_edge, cx, cy, num_of_grid_cells_in_width, left_edge_idx, a, b, c, 
+                                   d_right_edges, d_edge_indices, d_cell_start_idx, d_num_of_edges_in_cell, 
+                                   d_matches, d_match_count, max_matches);
+            }
+        }
+    }
+}
+
+void epipolar_rasterization_thick_band_kernel_launcher(
+    int device_id,
+    const Edge_GPU* d_left_edges, 
+    const Edge_GPU* d_right_edges, 
+    const int* d_edge_indices, 
+    const int* d_cell_start_idx, 
+    const int* d_num_of_edges_in_cell, 
+    const float* d_F, 
+    int num_of_left_edges, 
+    int img_right_W, int img_right_H, 
+    int num_of_grid_cells_in_width, 
+    int num_of_grid_cells_in_height, 
+    Match_by_Edge_Index* d_matches, 
+    int* d_match_count, 
+    int max_matches)
+{
+    int max_threads_per_block = 1024;
+    cudacheck(cudaDeviceGetAttribute(&max_threads_per_block, cudaDevAttrMaxThreadsPerBlock, device_id));
+
+    //> One thread per edge: block size must stay within device limit (typically less than or equal to 1024)
+    const int threads_per_block = (NUM_OF_THREADBLOCKS_SPATIAL_GRID_MAPPING < max_threads_per_block) ? 
+                                  (NUM_OF_THREADBLOCKS_SPATIAL_GRID_MAPPING) : (max_threads_per_block);
+    const int num_blocks = (num_of_left_edges + threads_per_block - 1) / threads_per_block;
+
+    dim3 block_dim(threads_per_block, 1, 1);
+    dim3 grid_dim(num_blocks, 1, 1);
+    
+    void *kernel_args[] = {
+        reinterpret_cast<void*>(&d_left_edges),
+        reinterpret_cast<void*>(&d_right_edges),
+        reinterpret_cast<void*>(&d_edge_indices),
+        reinterpret_cast<void*>(&d_cell_start_idx),
+        reinterpret_cast<void*>(&d_num_of_edges_in_cell),
+        reinterpret_cast<void*>(&d_F),
+        reinterpret_cast<void*>(&num_of_left_edges),
+        reinterpret_cast<void*>(&img_right_W),
+        reinterpret_cast<void*>(&img_right_H),
+        reinterpret_cast<void*>(&num_of_grid_cells_in_width),
+        reinterpret_cast<void*>(&num_of_grid_cells_in_height),
+        reinterpret_cast<void*>(&d_matches),
+        reinterpret_cast<void*>(&d_match_count),
+        reinterpret_cast<void*>(&max_matches)
+    };
+
+    cudacheck(cudaLaunchKernel( reinterpret_cast<const void*>(epipolar_rasterization_thick_band_kernel), grid_dim, block_dim, kernel_args, 0, nullptr) );
+}
+
+float epipolar_rasterization_thick_band_pipeline(
+    int                     device_id,
+    /* Data live in the host memory, used for results retrieval */
+    const float*            h_F,
+    const Edge_GPU*         h_left_edges,
+    int                     &h_match_count_out,
+    Match_by_Edge_Index*    &h_matches_out,
+    /* Data live in the device memory */
+    Edge_GPU*               d_left_edges,
+    const Edge_GPU*         d_right_edges, 
+    const int*              d_edge_indices,
+    const int*              d_cell_start_idx, 
+    const int*              d_num_of_edges_in_cell, 
+    float*                  d_F,
+    Match_by_Edge_Index*    d_matches, 
+    int*                    d_match_count, 
+    /* Others */
+    int                     num_of_left_edges, 
+    int                     img_right_W, 
+    int                     img_right_H, 
+    int                     num_of_grid_cells_in_width, 
+    int                     num_of_grid_cells_in_height, 
+    int                     max_matches,
+    cudaEvent_t             start,
+    cudaEvent_t             stop)
+{
+    cudacheck(cudaSetDevice(device_id));
+    
+    //> Copy data from host to device
+    cudacheck( cudaMemcpy( d_F, h_F, 9 * sizeof(float), cudaMemcpyHostToDevice ) );
+    cudacheck( cudaMemcpy( d_left_edges,  h_left_edges, num_of_left_edges  * sizeof(Edge_GPU), cudaMemcpyHostToDevice ) );
+
+    //> Initialize the number of edges per grid cell as 0
+    cudacheck( cudaMemset(d_match_count,  0, sizeof(int)) );
+
+    //> Start the CUDA event timer
+    cudacheck(cudaEventRecord(start));
+
+    //> Create and Launch the GPU kernel: assign each right edge a grid cell id based on its location
+    epipolar_rasterization_thick_band_kernel_launcher( device_id, d_left_edges, d_right_edges, d_edge_indices, d_cell_start_idx, d_num_of_edges_in_cell, d_F, num_of_left_edges, \
+                                            img_right_W, img_right_H, num_of_grid_cells_in_width, num_of_grid_cells_in_height, \
+                                            d_matches, d_match_count, max_matches );
+    cudacheck(cudaDeviceSynchronize());
+
+    //> End the CUDA event timer for spatial grid mapping
+    float epipolar_rasterization_time = 0.0f;
+    cudacheck(cudaEventRecord(stop));
+    cudacheck(cudaEventSynchronize(stop));
+    cudacheck(cudaEventElapsedTime(&epipolar_rasterization_time, start, stop));
+
+    std::cout << "Time for epipolar rasterization: " << epipolar_rasterization_time << " milliseconds" << std::endl;
+
+    //> TEST: retrieve results
+    #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
+    h_match_count_out = 0;
+    cudaMemcpy(&h_match_count_out, d_match_count, sizeof(int), cudaMemcpyDeviceToHost);
+
+    //> Clamp count just in case it exceeded the buffer size
+    if (h_match_count_out > max_matches) {
+        LOG_WARNING("The number of matches exceeded the buffer size");
+        h_match_count_out = max_matches;
+    }
+
+    if (h_match_count_out > 0) {
+        cudacheck(cudaMemcpy(h_matches_out, d_matches, h_match_count_out * sizeof(Match_by_Edge_Index),
+                             cudaMemcpyDeviceToHost));
+    }
+    #endif
+
+    return epipolar_rasterization_time;
+}
+
+#endif

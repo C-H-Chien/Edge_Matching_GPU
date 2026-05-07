@@ -17,7 +17,7 @@
 #define EPIPOLAR_LINE_DIST_THRESH (0.5)  //> in pixels
 #define EPIP_TENGENCY_ORIENT_THRESH (12) //> in degrees
 #define EPIP_TENGENCY_PROXIM_THRESH (4)  //> in pixels
-#define MAX_DISPARITY (150)
+#define MAX_DISPARITY (100)
 #define EDGE_CLUSTER_THRESH (0.3) //> in pixels
 #define ORTHOGONAL_SHIFT_MAG (5)  //> in pixels
 #define PATCH_SIZE (7)            //> in pixels
@@ -97,6 +97,7 @@
 
 //> Print outs
 #define LOG_INFO(info_msg) printf("\033[1;32m[INFO] %s\033[0m\n", std::string(info_msg).c_str());
+#define LOG_WARNING(warning_msg) do { std::cout << "\033[1;36m[WARNING] " << (warning_msg) << "\033[0m\n" << std::flush; } while(0)
 #define LOG_STATUS(status_) printf("\033[1;35m[STATUS] %s\033[0m\n", std::string(status_).c_str());
 #define LOG_ERROR(err_msg) printf("\033[1;31m[ERROR] %s\033[0m\n", std::string(err_msg).c_str());
 #define LOG_TEST(test_msg) printf("\033[1;30m[TEST] %s\033[0m\n", std::string(test_msg).c_str());

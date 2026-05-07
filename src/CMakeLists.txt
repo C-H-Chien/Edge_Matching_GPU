@@ -9,11 +9,13 @@ set (control_sources
         EdgeClusterer.cpp
 
         Stereo_Matches_GPU.cpp
+        Stereo_Matches_GPU_Validator.cpp
 )
 
 if(ENABLE_CUDA)
     list(APPEND control_sources
         gpu_kernels/spatial_grid_mapping.cu
+        gpu_kernels/epipolar_rasterization.cu
     )
 endif()
 

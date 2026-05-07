@@ -4,6 +4,7 @@
 #include <cuda_runtime.h>
 #include <cstddef>
 #include <iostream>
+#include <vector>
 
 #include <thrust/device_ptr.h>
 #include <thrust/fill.h>
@@ -20,6 +21,7 @@ spatial_grid_mapping_kernel(
     const Edge_GPU* d_edges, 
     int num_of_edges, 
     int num_of_grids_in_width,
+    int num_of_grids_in_height,
     int* d_cell_ids) 
 {
     const int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -27,6 +29,8 @@ spatial_grid_mapping_kernel(
         //> Find 2D grid coordinates
         int cx = (int)(d_edges[tid].location_x / GRID_CELL_SIZE);
         int cy = (int)(d_edges[tid].location_y / GRID_CELL_SIZE);
+        cx = max(0, min(cx, num_of_grids_in_width - 1));
+        cy = max(0, min(cy, num_of_grids_in_height - 1));
         
         //> Flatten 2D grid coordinates to a 1D cell id
         d_cell_ids[tid] = cx + cy * num_of_grids_in_width;
@@ -71,20 +75,20 @@ find_grid_boundaries_kernel(
     }
 }
 
-void spatial_grid_mapping(
+void spatial_grid_mapping_kernel_launcher(
     int device_id,
     const Edge_GPU* d_edges,
     int num_of_edges,
     int num_of_grids_in_width,
+    int num_of_grids_in_height,
     int* d_cell_ids)
 {
-    cudacheck(cudaSetDevice(device_id));
-
-    int nthreads_max = 1024;
-    cudacheck(cudaDeviceGetAttribute(&nthreads_max, cudaDevAttrMaxThreadsPerBlock, device_id));
+    int max_threads_per_block = 1024;
+    cudacheck(cudaDeviceGetAttribute(&max_threads_per_block, cudaDevAttrMaxThreadsPerBlock, device_id));
 
     //> One thread per edge: block size must stay within device limit (typically less than or equal to 1024)
-    const int threads_per_block = (NUM_OF_THREADBLOCKS_SPATIAL_GRID_MAPPING < nthreads_max) ? (NUM_OF_THREADBLOCKS_SPATIAL_GRID_MAPPING) : (nthreads_max);
+    const int threads_per_block = (NUM_OF_THREADBLOCKS_SPATIAL_GRID_MAPPING < max_threads_per_block) ? 
+                                  (NUM_OF_THREADBLOCKS_SPATIAL_GRID_MAPPING) : (max_threads_per_block);
     const int num_blocks = (num_of_edges + threads_per_block - 1) / threads_per_block;
 
     dim3 block_dim(threads_per_block, 1, 1);
@@ -94,26 +98,26 @@ void spatial_grid_mapping(
         reinterpret_cast<void*>(&d_edges),
         reinterpret_cast<void*>(&num_of_edges),
         reinterpret_cast<void*>(&num_of_grids_in_width),
+        reinterpret_cast<void*>(&num_of_grids_in_height),
         reinterpret_cast<void*>(&d_cell_ids)
     };
 
     cudacheck(cudaLaunchKernel( reinterpret_cast<const void*>(spatial_grid_mapping_kernel), grid_dim, block_dim, kernel_args, 0, nullptr) );
 }
 
-void find_grid_boundaries(
+void find_grid_boundaries_kernel_launcher(
     int device_id,
     const int* d_cell_ids,
     int* d_cell_start_idx,
     int* d_num_of_edges_per_cell,
     int num_of_edges)
 {
-    cudacheck(cudaSetDevice(device_id));
-
-    int nthreads_max = 1024;
-    cudacheck(cudaDeviceGetAttribute(&nthreads_max, cudaDevAttrMaxThreadsPerBlock, device_id));
+    int max_threads_per_block = 1024;
+    cudacheck(cudaDeviceGetAttribute(&max_threads_per_block, cudaDevAttrMaxThreadsPerBlock, device_id));
 
     //> One thread per edge: block size must stay within device limit (typically less than or equal to 1024)
-    const int threads_per_block = (NUM_OF_THREADBLOCKS_SPATIAL_GRID_MAPPING < nthreads_max) ? (NUM_OF_THREADBLOCKS_SPATIAL_GRID_MAPPING) : (nthreads_max);
+    const int threads_per_block = (NUM_OF_THREADBLOCKS_SPATIAL_GRID_MAPPING < max_threads_per_block) ? 
+                                  (NUM_OF_THREADBLOCKS_SPATIAL_GRID_MAPPING) : (max_threads_per_block);
     const int num_blocks = (num_of_edges + threads_per_block - 1) / threads_per_block;
 
     dim3 block_dim(threads_per_block, 1, 1);
@@ -130,25 +134,26 @@ void find_grid_boundaries(
 }
 
 float edge_spatial_map_thrust_pipeline(
-    int device_id,
-    Edge_GPU* d_left_edges,
-    const Edge_GPU* h_left_edges,
-    std::size_t num_left_edges,
-    Edge_GPU* d_right_edges,
+    int             device_id,
+    /* Data live in the host memory */
     const Edge_GPU* h_right_edges,
-    std::size_t num_right_edges,
-    int* d_cell_ids,
-    int* d_edge_indices,
-    int* d_cell_start_idx,
-    int* d_num_of_edges_in_cell,
-    int total_num_of_grid_cells,
-    int num_of_grid_cells_in_width,
-    cudaEvent_t start,
-    cudaEvent_t stop)
+    int*            &h_cell_ids_out,
+    /* Data live in the device memory */
+    Edge_GPU*       d_right_edges,
+    int*            d_cell_ids,
+    int*            d_edge_indices,
+    int*            d_cell_start_idx,
+    int*            d_num_of_edges_in_cell,
+    /* Others */
+    std::size_t     num_right_edges,
+    int             total_num_of_grid_cells,
+    int             num_of_grid_cells_in_width,
+    int             num_of_grid_cells_in_height,
+    cudaEvent_t     start,
+    cudaEvent_t     stop)
 {
     //> Copy edges data from host to device
     cudacheck( cudaSetDevice(device_id) );
-    cudacheck( cudaMemcpy( d_left_edges,  h_left_edges,  num_left_edges  * sizeof(Edge_GPU), cudaMemcpyHostToDevice) );
     cudacheck( cudaMemcpy( d_right_edges, h_right_edges, num_right_edges * sizeof(Edge_GPU), cudaMemcpyHostToDevice) );
 
     //> Wrap raw pointers in thrust::device_ptr; this allows Thrust to interact with memory allocated via cudaMalloc
@@ -168,16 +173,44 @@ float edge_spatial_map_thrust_pipeline(
     thrust::sequence(t_edge_indices, t_edge_indices + num_right_edges);
 
     //> Create and Launch the GPU kernel: assign each right edge a grid cell id based on its location
-    spatial_grid_mapping( device_id, d_right_edges, static_cast<int>(num_right_edges), num_of_grid_cells_in_width, d_cell_ids );
+    spatial_grid_mapping_kernel_launcher(device_id, d_right_edges, static_cast<int>(num_right_edges),
+                                         num_of_grid_cells_in_width, num_of_grid_cells_in_height, d_cell_ids);
     cudacheck(cudaDeviceSynchronize());
 
     //> Sort the indices using the Cell IDs as the key. This groups all points in Cell 0 together, then Cell 1, etc.
     //> It rearranges 't_edge_indices' to match the sorted 't_cell_ids'.
     thrust::sort_by_key(t_cell_ids, t_cell_ids + num_right_edges, t_edge_indices);
 
-    //> Launch the kernel of finding the boundaries of the sorted arrays
-    find_grid_boundaries( device_id, d_cell_ids, d_cell_start_idx, d_num_of_edges_in_cell, static_cast<int>(num_right_edges) );
-    cudacheck(cudaDeviceSynchronize());
+    // //> Launch the kernel of finding the boundaries of the sorted arrays
+    // find_grid_boundaries_kernel_launcher( device_id, d_cell_ids, d_cell_start_idx, d_num_of_edges_in_cell, static_cast<int>(num_right_edges) );
+    // cudacheck(cudaDeviceSynchronize());
+
+    //> Build boundaries from sorted cell ids on host to guarantee non-overlapping ranges.
+    //> This avoids subtle indexing races/corruption that can create duplicate candidate scans.
+    std::vector<int> h_sorted_cell_ids(num_right_edges, 0);
+    std::vector<int> h_cell_start_idx(total_num_of_grid_cells, 0);
+    std::vector<int> h_num_of_edges_in_cell(total_num_of_grid_cells, 0);
+    cudacheck(cudaMemcpy(h_sorted_cell_ids.data(), d_cell_ids, num_right_edges * sizeof(int), cudaMemcpyDeviceToHost));
+
+    if (num_right_edges > 0) {
+        int first_cell = h_sorted_cell_ids[0];
+        h_cell_start_idx[first_cell] = 0;
+        for (int tid = 1; tid < static_cast<int>(num_right_edges); ++tid) {
+            int cell_of_tid = h_sorted_cell_ids[tid];
+            int prev_cell = h_sorted_cell_ids[tid - 1];
+            if (cell_of_tid != prev_cell) {
+                h_cell_start_idx[cell_of_tid] = tid;
+                h_num_of_edges_in_cell[prev_cell] = tid - h_cell_start_idx[prev_cell];
+            }
+        }
+        int last_cell = h_sorted_cell_ids[static_cast<int>(num_right_edges) - 1];
+        h_num_of_edges_in_cell[last_cell] = static_cast<int>(num_right_edges) - h_cell_start_idx[last_cell];
+    }
+
+    cudacheck(cudaMemcpy(d_cell_start_idx, h_cell_start_idx.data(),
+                         total_num_of_grid_cells * sizeof(int), cudaMemcpyHostToDevice));
+    cudacheck(cudaMemcpy(d_num_of_edges_in_cell, h_num_of_edges_in_cell.data(),
+                         total_num_of_grid_cells * sizeof(int), cudaMemcpyHostToDevice));
 
     //> End the CUDA event timer for spatial grid mapping
     float build_spatial_grid_time = 0.0f;
@@ -186,6 +219,11 @@ float edge_spatial_map_thrust_pipeline(
     cudacheck(cudaEventElapsedTime(&build_spatial_grid_time, start, stop));
 
     std::cout << "Time for spatial grid mapping: " << build_spatial_grid_time << " milliseconds" << std::endl;
+
+    //> TEST: Copy cell ids data from device to host
+    #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
+    cudacheck( cudaMemcpy(h_cell_ids_out, d_cell_ids, num_right_edges * sizeof(int), cudaMemcpyDeviceToHost) );
+    #endif
 
     return build_spatial_grid_time;
 }

@@ -7,6 +7,9 @@
 #include <iostream>
 #include <string.h>
 #include <vector>
+#include <cstdlib>
+#include <stdexcept>
+#include <string>
 #include <cuda_runtime.h>
 #include <cuda_runtime_api.h>
 
@@ -24,15 +27,27 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     ,dataset_(std::move(dataset))
 {
     //> Fundamental matrix (left to right) is casted to float matrix
-    F_left2right_ = dataset_->get_fund_mat_21().cast<float>();
-    F_left2right = F_left2right_.data();
+    h_F_ = dataset_->get_fund_mat_21().cast<float>();
+    h_F = h_F_.data();
     num_left_edges_ = current_frame.left_edges.size();
     num_right_edges_ = current_frame.right_edges.size();
+
+    //> Sanity check
+    if (num_left_edges_ <= 0) {
+        LOG_ERROR("Number of edges on the left image is less than or equal to 0");
+    }
+    if (num_right_edges_ <= 0) {
+        LOG_ERROR("Number of edges on the right image is less than or equal to 0");
+    }
+
+    //> CAUTION: this is subject to the scene complexity
+    max_stereo_edge_matches_after_epipolar_rasterization = num_left_edges_ * FACTOR_OF_NUM_OF_LEFT_EDGES_FOR_STEREO_EDGE_MATCHES_AFTER_EPIPOLAR_RASTERIZATION;
 
     //> convert edges to float (double -> float)
     h_left_edges = new Edge_GPU[num_left_edges_];
     h_right_edges = new Edge_GPU[num_right_edges_];
     h_cell_ids = new int[num_right_edges_];
+    h_matches_out = new Match_by_Edge_Index[max_stereo_edge_matches_after_epipolar_rasterization];
 
     //> Casting the edges to the proper format for GPU processing
     #pragma omp parallel for
@@ -56,14 +71,58 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     std::cout << "Right image size: " << img_right_width << " x " << img_right_height << std::endl;
     std::cout << "Number of grid cells in width: " << num_of_grid_cells_in_width << std::endl;
 
+    //> Bind a valid CUDA device before any allocations (required on multi-GPU systems and some job schedulers)
+    //> Discard any sticky CUDA error from earlier API use in this process (e.g. OpenCV built with CUDA).
+    (void)cudaGetLastError();
+
+    int driver_ver = 0;
+    (void)cudaDriverGetVersion(&driver_ver);
+    int runtime_ver = 0;
+    (void)cudaRuntimeGetVersion(&runtime_ver);
+
+    int n_cuda_devices = 0;
+    cudaError_t err_count = cudaGetDeviceCount(&n_cuda_devices);
+    if (err_count != cudaSuccess) {
+        const char* cvd = ::getenv("CUDA_VISIBLE_DEVICES");
+        std::string cvd_str = cvd ? std::string(" CUDA_VISIBLE_DEVICES=\"") + cvd + "\"." : "";
+        throw std::runtime_error(
+            std::string("cudaGetDeviceCount failed: ") + cudaGetErrorString(err_count) +
+            " (error code " + std::to_string(static_cast<int>(err_count)) + "). "
+            "cudaDriverGetVersion=" + std::to_string(driver_ver) + ", cudaRuntimeGetVersion=" +
+            std::to_string(runtime_ver) + "." + cvd_str +
+            " Error 999 (cudaErrorUnknown) is commonly a **NVIDIA driver vs CUDA toolkit mismatch**: the top of "
+            "nvidia-smi shows the **maximum CUDA version the driver supports**; this binary uses libcudart 12.x "
+            "(see runtime number). Rebuild and run with a **CUDA toolkit module that is <= that driver max**, "
+            "or use a node with a newer driver. Check `ldd` on your binary to see which libcudart is loaded.");
+    }
+    if (n_cuda_devices == 0) {
+        throw std::runtime_error(
+            "cudaGetDeviceCount returned success but reported 0 CUDA devices (runtime version " +
+            std::to_string(runtime_ver) +
+            "). If nvidia-smi lists a GPU, common causes are: (1) running outside your GPU Slurm allocation "
+            "in a shell that cannot access /dev/nvidia*; (2) CUDA_VISIBLE_DEVICES empty or invalid; "
+            "(3) cluster cgroup denies GPU to this process—launch main_VO from the same interactive GPU session "
+            "where nvidia-smi works.");
+    }
+    if (device_id < 0 || device_id >= n_cuda_devices) {
+        throw std::runtime_error(
+            "CUDA: invalid device_id " + std::to_string(device_id) + " (visible devices: 0-" +
+            std::to_string(n_cuda_devices - 1) + "). Adjust DEVICE_ID or CUDA_VISIBLE_DEVICES.");
+    }
+    cudacheck(cudaSetDevice(device_id));
+
     //> Allocate GPU memory
-    cudacheck( cudaMalloc((void**)&d_left_edges,    num_left_edges_ * sizeof(Edge_GPU))   );
-    cudacheck( cudaMalloc((void**)&d_right_edges,   num_right_edges_ * sizeof(Edge_GPU))  );
-    cudacheck( cudaMalloc((void**)&d_cell_ids,      num_right_edges_ * sizeof(int))       );
+    cudacheck( cudaMalloc((void**)&d_F,                            9 * sizeof(float))    );
+    cudacheck( cudaMalloc((void**)&d_left_edges,    num_left_edges_  * sizeof(Edge_GPU)) );
+    cudacheck( cudaMalloc((void**)&d_right_edges,   num_right_edges_ * sizeof(Edge_GPU)) );
+    cudacheck( cudaMalloc((void**)&d_cell_ids,      num_right_edges_ * sizeof(int))      );
 
     cudacheck( cudaMalloc((void**)&d_edge_indices,          num_right_edges_ * sizeof(int))        );
     cudacheck( cudaMalloc((void**)&d_cell_start_idx,        total_num_of_grid_cells * sizeof(int)) );
     cudacheck( cudaMalloc((void**)&d_num_of_edges_in_cell,  total_num_of_grid_cells * sizeof(int)) );
+
+    cudacheck( cudaMalloc((void**)&d_matches,     max_stereo_edge_matches_after_epipolar_rasterization * sizeof(Match_by_Edge_Index)) );
+    cudacheck( cudaMalloc((void**)&d_match_count, sizeof(int)) );
 
     //> cuda event
     cudacheck( cudaEventCreate(&start) );
@@ -77,55 +136,108 @@ void Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU() {
 
     //> For each edge on the right, construct the spatial grid mapping (result is stored in d_cell_ids)
     GPU_time_collection.time_spatial_grid_mapping = build_edge_spatial_map();
+    #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
+    test_spatial_grid_mapping();
+    #endif
+
+    //> Do epipolar line rasterization to find right candidate edges that pass EP, LP, and OR filters
+    GPU_time_collection.time_epipolar_rasterization = rasterize_epipolar_band_for_matches();
+    #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
+    test_epipolar_rasterization();
+    #endif
 }
 
 float Stereo_Matches_GPU_Pipeline::build_edge_spatial_map() {
 
-    //> OLD CODE: Copy cell ids data from device to host
-    // cudacheck( cudaMemcpy(h_cell_ids, d_cell_ids, num_right_edges_ * sizeof(int), cudaMemcpyDeviceToHost) );
-    // test_spatial_grid_mapping();
-
-    //> Sanity check
-    if (num_left_edges_ <= 0) {
-        LOG_ERROR("Number of edges on the left image is less than or equal to 0 in spatial grid mapping");
-        return -1.0;
-    }
-    if (num_right_edges_ <= 0) {
-        LOG_ERROR("Number of edges on the right image is less than or equal to 0 in spatial grid mapping");
-        return -1.0;
-    }
-
     //> Build edge spatial map
     return edge_spatial_map_thrust_pipeline(
         device_id,
-        d_left_edges,
-        h_left_edges,
-        num_left_edges_,
-        d_right_edges,
         h_right_edges,
-        num_right_edges_,
+        h_cell_ids,
+        d_right_edges,
         d_cell_ids,
         d_edge_indices,
         d_cell_start_idx,
         d_num_of_edges_in_cell,
+        num_right_edges_,
         total_num_of_grid_cells,
         num_of_grid_cells_in_width,
+        num_of_grid_cells_in_height,
         start,
         stop);
 }
 
+float Stereo_Matches_GPU_Pipeline::rasterize_epipolar_band_for_matches() {
+
+    return epipolar_rasterization_thick_band_pipeline(
+        device_id,
+        h_F,
+        h_left_edges,
+        h_match_count,
+        h_matches_out,
+        d_left_edges,
+        d_right_edges,
+        d_edge_indices,
+        d_cell_start_idx,
+        d_num_of_edges_in_cell,
+        d_F,
+        d_matches,
+        d_match_count,
+        num_left_edges_,
+        img_right_width,
+        img_right_height,
+        num_of_grid_cells_in_width,
+        num_of_grid_cells_in_height,
+        max_stereo_edge_matches_after_epipolar_rasterization,
+        start,
+        stop);
+}
+
+Stereo_Matches_GPU_Test_Context Stereo_Matches_GPU_Pipeline::make_test_context() const
+{
+    Stereo_Matches_GPU_Test_Context ctx;
+    ctx.h_left_edges = h_left_edges;
+    ctx.h_right_edges = h_right_edges;
+    ctx.h_cell_ids = h_cell_ids;
+    ctx.h_F = h_F;
+    ctx.d_matches = d_matches;
+    ctx.d_match_count = d_match_count;
+    ctx.d_edge_indices = d_edge_indices;
+    ctx.num_left_edges = num_left_edges_;
+    ctx.num_right_edges = num_right_edges_;
+    ctx.img_right_width = img_right_width;
+    ctx.img_right_height = img_right_height;
+    ctx.num_of_grid_cells_in_width = num_of_grid_cells_in_width;
+    ctx.num_of_grid_cells_in_height = num_of_grid_cells_in_height;
+    ctx.max_matches = max_stereo_edge_matches_after_epipolar_rasterization;
+    return ctx;
+}
+
+void Stereo_Matches_GPU_Pipeline::test_spatial_grid_mapping() const {
+    Stereo_Matches_GPU_Validator::test_spatial_grid_mapping(make_test_context());
+}
+
+void Stereo_Matches_GPU_Pipeline::test_epipolar_rasterization() const {
+    Stereo_Matches_GPU_Validator::test_epipolar_rasterization(make_test_context());
+}
+
 Stereo_Matches_GPU_Pipeline::~Stereo_Matches_GPU_Pipeline()
 {
+    //> Note that h_F aliases h_F_.data(), so Eigen frees that storage when h_F_ is destroyed. No need to delete[] h_F.
     delete[] h_left_edges;
     delete[] h_right_edges;
     delete[] h_cell_ids;
+    delete[] h_matches_out;
 
+    cudacheck( cudaFree(d_F) );
     cudacheck( cudaFree(d_left_edges) );
     cudacheck( cudaFree(d_right_edges) );
     cudacheck( cudaFree(d_cell_ids) );
     cudacheck( cudaFree(d_edge_indices) );
     cudacheck( cudaFree(d_cell_start_idx) );
     cudacheck( cudaFree(d_num_of_edges_in_cell) );
+    cudacheck( cudaFree(d_matches) );
+    cudacheck( cudaFree(d_match_count) );
 
     cudacheck(cudaEventDestroy(start));
     cudacheck(cudaEventDestroy(stop));
