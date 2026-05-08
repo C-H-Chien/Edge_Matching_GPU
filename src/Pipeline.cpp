@@ -122,6 +122,7 @@ void Pipeline::get_Stereo_Edge_Correspondences()
 {
     stereo_matches_engine_GPU = std::make_shared<Stereo_Matches_GPU_Pipeline>(dataset_, current_frame, DEVICE_ID);
     stereo_matches_engine_GPU->get_stereo_edge_matching_GPU();
+    stereo_matches_engine_GPU->write_sift_matches_to_file(stereo_current_frame_idx);
     
     // //> Set the stereo left constructor
     // set_Stereo_Left_Constructor();

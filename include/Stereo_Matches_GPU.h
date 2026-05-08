@@ -22,6 +22,7 @@ struct GPU_Timing_Statistics
     float time_epipolar_rasterization;
     float time_precompute_left_edge_patches_photometry;
     float time_apply_NCC_filter;
+    float time_apply_SIFT_descriptor_filter;
 };
 
 class Stereo_Matches_GPU_Pipeline {
@@ -39,6 +40,13 @@ public:
     float rasterize_epipolar_band_for_matches();
     float precompute_left_edge_patches_photometry();
     float apply_NCC_filter();
+    float apply_SIFT_descriptor_filter();
+
+    //> Writes the GPU SIFT-passing matches for the current frame to
+    //> `<dataset_output_path>/gpu_sift_matches_frame_<frame_idx>.txt` as
+    //> `left_idx left_x left_y left_orientation right_idx right_x right_y right_orientation`,
+    //> one row per surviving match. Used for offline plotting / visual inspection.
+    void write_sift_matches_to_file(size_t frame_idx) const;
 
     int device_id;
     int img_left_height, img_right_height;
@@ -61,6 +69,7 @@ private:
     int* h_cell_ids = nullptr;
     int h_match_count_passing_EP_LP_OR_filters = 0;
     int h_match_count_passing_NCC_filter = 0;
+    int h_match_count_passing_SIFT_filter = 0;
     float h_F_row_major_[9] = {};
     float* h_F = h_F_row_major_;
     Match_by_Edge_Index* h_matches_out = nullptr;
@@ -75,9 +84,14 @@ private:
     int* d_match_count_passing_EP_LP_OR_filters = nullptr;
     Match_by_Edge_Index* d_final_matches_passing_EP_LP_OR_filters = nullptr;
     float* d_F = nullptr;
-    Precomputed_Edge_Patches_Photometry* d_left_patches;
+    Precomputed_Edge_Patches_Photometry* d_left_patches = nullptr;
     int* d_final_count_passing_NCC_filter = nullptr;
     Match_by_Edge_Index* d_final_matches_passing_NCC_filter = nullptr;
+    int* d_final_count_passing_SIFT_filter = nullptr;
+    Match_by_Edge_Index* d_final_matches_passing_SIFT_filter = nullptr;
+    CUDA_Texture_Wrapper left_image_texture_ = {nullptr, 0};
+    CUDA_Texture_Wrapper right_image_texture_ = {nullptr, 0};
+    bool b_image_textures_ready_ = false;
 
     int num_of_grid_cells_in_width;
     int num_of_grid_cells_in_height;
@@ -92,27 +106,40 @@ private:
     /** Valid for comparisons only if the StereoFrame outlives this pipeline instance (same as Pipeline::current_frame). */
     const StereoFrame* stereo_frame_ptr_ = nullptr;
 
+    void allocate_image_textures();
+    void release_image_textures();
+
     //> GPU results validation
     Stereo_Matches_GPU_Test_Context make_test_context() const;
     void test_spatial_grid_mapping() const;
     void test_epipolar_rasterization() const;
     void test_EP_LP_OR_vs_stereo_matches_cpu() const;
     void test_ncc_filter() const;
+    void test_SIFT_descriptor_filter() const;
 };
 
 namespace {
-int mat_rows_prefer_undistorted(const cv::Mat& undistorted, const cv::Mat& raw)
+//> Picks the GPU-side image source: undistorted whenever it's available, else the raw
+//> distorted image as a graceful fallback. Used in the constructor's initializer list
+//> (for width/height) and in the constructor body (for the float buffer). Keeping a
+//> single chooser avoids drifting between the two.
+const cv::Mat& pick_image_for_gpu(const cv::Mat& undistorted, const cv::Mat& raw)
 {
     if (!undistorted.empty())
-        return undistorted.rows;
-    return raw.empty() ? 0 : raw.rows;
+        return undistorted;
+    return raw;
+}
+
+int mat_rows_prefer_undistorted(const cv::Mat& undistorted, const cv::Mat& raw)
+{
+    const cv::Mat& chosen = pick_image_for_gpu(undistorted, raw);
+    return chosen.empty() ? 0 : chosen.rows;
 }
 
 int mat_cols_prefer_undistorted(const cv::Mat& undistorted, const cv::Mat& raw)
 {
-    if (!undistorted.empty())
-        return undistorted.cols;
-    return raw.empty() ? 0 : raw.cols;
+    const cv::Mat& chosen = pick_image_for_gpu(undistorted, raw);
+    return chosen.empty() ? 0 : chosen.cols;
 }
 } // namespace
 

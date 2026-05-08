@@ -109,9 +109,9 @@ void apply_NCC_filter_kernel_launcher(
 
 float apply_NCC_filter_pipeline(
     int                         device_id,
-    /* Data live in the host memory */
-    float*                      h_right_img,
     int                         &h_NCC_match_count_out,
+    /* Data live in the CUDA texture memory */
+    cudaTextureObject_t         right_tex,
     /* Data live in the device memory */
     const Match_by_Edge_Index*  d_candidate_matches,
     const Edge_GPU*             d_left_edges,
@@ -120,8 +120,6 @@ float apply_NCC_filter_pipeline(
     int*                        &d_match_count_passing_NCC_filter,
     Precomputed_Edge_Patches_Photometry* d_left_patches,
     /* Others */
-    int                         right_img_width,
-    int                         right_img_height,
     int                         num_candidates,
     cudaEvent_t                 start,
     cudaEvent_t                 stop)
@@ -131,16 +129,13 @@ float apply_NCC_filter_pipeline(
     //> atomicAdd target must be zero-initialized before the kernel launch
     cudacheck(cudaMemset(d_match_count_passing_NCC_filter, 0, sizeof(int)));
 
-    //> Create Textures by copying the host images (right image) to the GPU texture cache
-    CUDA_Texture_Wrapper right_texture_wrap = create_CUDA_texture_object_for_img(h_right_img, right_img_width, right_img_height);
-
     //> Start the CUDA event timer
     cudacheck(cudaEventRecord(start));
 
     //> Launch the NCC filter kernel
     apply_NCC_filter_kernel_launcher(device_id, d_candidate_matches, d_left_edges, d_right_edges, 
                                      d_final_matches_passing_NCC_filter, d_match_count_passing_NCC_filter, 
-                                     d_left_patches, right_texture_wrap.texObj, num_candidates);
+                                     d_left_patches, right_tex, num_candidates);
     cudacheck(cudaDeviceSynchronize());
 
     //> End the CUDA event timer for NCC filter
@@ -154,10 +149,6 @@ float apply_NCC_filter_pipeline(
     //> Copy match count to host for downstream stages (must stay in sync with d_match_count)
     h_NCC_match_count_out = 0;
     cudacheck(cudaMemcpy(&h_NCC_match_count_out, d_match_count_passing_NCC_filter, sizeof(int), cudaMemcpyDeviceToHost));
-
-    //> Destroy the texture. This does not destroy the underlying array, so the allocated patches are kept alive.
-    cudacheck( cudaDestroyTextureObject(right_texture_wrap.texObj) );
-    cudacheck( cudaFreeArray(right_texture_wrap.array) );
 
     return apply_NCC_filter_time;
 }

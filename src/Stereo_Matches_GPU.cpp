@@ -26,7 +26,7 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     ,img_left_width(mat_cols_prefer_undistorted(current_frame.left_image_undistorted, current_frame.left_image))
     ,img_right_width(mat_cols_prefer_undistorted(current_frame.right_image_undistorted, current_frame.right_image))
     ,dataset_(std::move(dataset))
-    , stereo_frame_ptr_(&current_frame)
+    ,stereo_frame_ptr_(&current_frame)
 {
     //> Fundamental matrix (left to right) is casted to float matrix.
     //> Eigen stores Matrix3f column-major by default, but kernels index h_F as row-major:
@@ -58,12 +58,16 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     h_cell_ids = new int[num_right_edges_];
     h_matches_out = new Match_by_Edge_Index[max_stereo_edge_matches_after_epipolar_rasterization];
 
-    //> Flatten images as float. StereoFrame images are loaded as CV_8U grayscale in Stereo_Iterator,
-    //> so direct memcpy into float* is invalid and can corrupt NCC photometry.
+    //> Flatten images as float. Note that the data type needs to be CV_32F
+    //> Prefer the undistorted image (the same image edges are detected on and CPU SIFT reads),
+    //> If the undistorted image is empty, fall back to the raw distorted image
+    //> The same chain feeds img_*_width/height above, so the buffer dimensions stay in sync with the source.
+    const cv::Mat& left_src  = pick_image_for_gpu( current_frame.left_image_undistorted, current_frame.left_image );
+    const cv::Mat& right_src = pick_image_for_gpu( current_frame.right_image_undistorted, current_frame.right_image );
     cv::Mat left_float;
     cv::Mat right_float;
-    current_frame.left_image.convertTo(left_float, CV_32F);
-    current_frame.right_image.convertTo(right_float, CV_32F);
+    left_src.convertTo(left_float, CV_32F);
+    right_src.convertTo(right_float, CV_32F);
     if (!left_float.isContinuous())
         left_float = left_float.clone();
     if (!right_float.isContinuous())
@@ -154,6 +158,42 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     //> cuda event
     cudacheck( cudaEventCreate(&start) );
     cudacheck( cudaEventCreate(&stop) );
+
+    //> Upload image data once per frame and keep texture objects alive for all image-sampling GPU stages
+    //> This avoids re-uploading the same undistorted images in each pipeline function.
+    allocate_image_textures();
+}
+
+void Stereo_Matches_GPU_Pipeline::allocate_image_textures()
+{
+    if (b_image_textures_ready_)
+        return;
+
+    cudacheck(cudaSetDevice(device_id));
+    left_image_texture_  = create_CUDA_texture_object_for_img(h_left_img,  img_left_width,  img_left_height);
+    right_image_texture_ = create_CUDA_texture_object_for_img(h_right_img, img_right_width, img_right_height);
+    b_image_textures_ready_ = true;
+}
+
+void Stereo_Matches_GPU_Pipeline::release_image_textures()
+{
+    if (left_image_texture_.texObj != 0) {
+        cudacheck(cudaDestroyTextureObject(left_image_texture_.texObj));
+        left_image_texture_.texObj = 0;
+    }
+    if (left_image_texture_.array != nullptr) {
+        cudacheck(cudaFreeArray(left_image_texture_.array));
+        left_image_texture_.array = nullptr;
+    }
+    if (right_image_texture_.texObj != 0) {
+        cudacheck(cudaDestroyTextureObject(right_image_texture_.texObj));
+        right_image_texture_.texObj = 0;
+    }
+    if (right_image_texture_.array != nullptr) {
+        cudacheck(cudaFreeArray(right_image_texture_.array));
+        right_image_texture_.array = nullptr;
+    }
+    b_image_textures_ready_ = false;
 }
 
 void Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU() {
@@ -182,6 +222,13 @@ void Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU() {
     std::cout << "Number of matches passing NCC filter: " << h_match_count_passing_NCC_filter << std::endl;
     #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
     test_ncc_filter();
+    #endif
+
+    //> Apply GPU-only SIFT-style descriptor filter
+    GPU_time_collection.time_apply_SIFT_descriptor_filter = apply_SIFT_descriptor_filter();
+    std::cout << "Number of matches passing GPU SIFT descriptor filter: " << h_match_count_passing_SIFT_filter << std::endl;
+    #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
+    test_SIFT_descriptor_filter();
     #endif
 }
 
@@ -235,11 +282,9 @@ float Stereo_Matches_GPU_Pipeline::precompute_left_edge_patches_photometry() {
 
     return precompute_left_edge_patches_photometry_pipeline(
         device_id,
-        h_left_img,
+        left_image_texture_.texObj,
         d_left_patches,
         d_left_edges,
-        img_left_width,
-        img_left_height,
         num_left_edges_,
         start,
         stop
@@ -272,17 +317,44 @@ float Stereo_Matches_GPU_Pipeline::apply_NCC_filter() {
     std::cout << "Number of matches passing EP, LP, and OR filters: " << num_candidates << std::endl;
     return apply_NCC_filter_pipeline(
         device_id,
-        h_right_img,
         h_match_count_passing_NCC_filter,
+        right_image_texture_.texObj,
         d_final_matches_passing_EP_LP_OR_filters,
         d_left_edges,
         d_right_edges,
         d_final_matches_passing_NCC_filter,
         d_final_count_passing_NCC_filter,
         d_left_patches,
+        num_candidates,
+        start,
+        stop
+    );
+}
+
+float Stereo_Matches_GPU_Pipeline::apply_SIFT_descriptor_filter() {
+
+    //> Just a sanity check
+    if (h_match_count_passing_NCC_filter < 0) {
+        LOG_ERROR("GPU SIFT: invalid negative NCC count from device; treating as 0");
+        h_match_count_passing_NCC_filter = 0;
+        return -1.0;
+    }
+
+    return apply_SIFT_descriptor_filter_pipeline(
+        device_id,
+        h_match_count_passing_SIFT_filter,
+        left_image_texture_.texObj,
+        right_image_texture_.texObj,
+        d_final_matches_passing_NCC_filter,
+        d_left_edges,
+        d_right_edges,
+        d_final_matches_passing_SIFT_filter,
+        d_final_count_passing_SIFT_filter,
+        img_left_width,
+        img_left_height,
         img_right_width,
         img_right_height,
-        num_candidates,
+        h_match_count_passing_NCC_filter,
         start,
         stop
     );
@@ -299,6 +371,8 @@ Stereo_Matches_GPU_Test_Context Stereo_Matches_GPU_Pipeline::make_test_context()
     ctx.d_match_count_passing_EP_LP_OR_filters = d_match_count_passing_EP_LP_OR_filters;
     ctx.d_final_matches_passing_NCC_filter = d_final_matches_passing_NCC_filter;
     ctx.d_final_count_passing_NCC_filter = d_final_count_passing_NCC_filter;
+    ctx.d_final_matches_passing_SIFT_filter = d_final_matches_passing_SIFT_filter;
+    ctx.d_final_count_passing_SIFT_filter = d_final_count_passing_SIFT_filter;
     ctx.d_left_patches = d_left_patches;
     ctx.d_edge_indices = d_edge_indices;
     ctx.h_right_img = h_right_img;
@@ -330,9 +404,74 @@ void Stereo_Matches_GPU_Pipeline::test_ncc_filter() const {
     Stereo_Matches_GPU_Validator::test_ncc_filter(make_test_context());
 }
 
+void Stereo_Matches_GPU_Pipeline::test_SIFT_descriptor_filter() const {
+    Stereo_Matches_GPU_Validator::test_SIFT_descriptor_filter(make_test_context());
+}
+
+void Stereo_Matches_GPU_Pipeline::write_sift_matches_to_file(size_t frame_idx) const
+{
+    if (d_final_matches_passing_SIFT_filter == nullptr || d_final_count_passing_SIFT_filter == nullptr) {
+        LOG_WARNING("write_sift_matches_to_file: GPU SIFT outputs not allocated; skipping");
+        return;
+    }
+    int sift_count = 0;
+    cudaError_t err = cudaMemcpy(&sift_count, d_final_count_passing_SIFT_filter, sizeof(int), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        LOG_ERROR(std::string("write_sift_matches_to_file: cudaMemcpy d_final_count_passing_SIFT_filter failed: ") + cudaGetErrorString(err));
+        return;
+    }
+    if (sift_count < 0) {
+        LOG_ERROR("write_sift_matches_to_file: invalid negative SIFT match count from device");
+        return;
+    }
+
+    std::vector<Match_by_Edge_Index> sift_matches(static_cast<size_t>(sift_count));
+    if (sift_count > 0) {
+        err = cudaMemcpy(sift_matches.data(), d_final_matches_passing_SIFT_filter,
+                         static_cast<size_t>(sift_count) * sizeof(Match_by_Edge_Index),
+                         cudaMemcpyDeviceToHost);
+        if (err != cudaSuccess) {
+            LOG_ERROR(std::string("write_sift_matches_to_file: cudaMemcpy d_final_matches_passing_SIFT_filter failed: ") + cudaGetErrorString(err));
+            return;
+        }
+    }
+
+    const std::string output_dir = (dataset_ != nullptr) ? dataset_->get_output_path() : std::string("output_files");
+    const std::string filename = output_dir + "/gpu_sift_matches_frame_" + std::to_string(frame_idx) + ".txt";
+    std::ofstream outfile(filename);
+    if (!outfile.is_open()) {
+        LOG_ERROR("write_sift_matches_to_file: cannot open output file " + filename);
+        return;
+    }
+    outfile << "left_idx left_x left_y left_orientation right_idx right_x right_y right_orientation\n";
+    outfile.precision(8);
+
+    size_t skipped_invalid = 0;
+    for (const auto& m : sift_matches) {
+        if (m.left_edge_idx < 0 || static_cast<size_t>(m.left_edge_idx) >= num_left_edges_ ||
+            m.right_edge_idx < 0 || static_cast<size_t>(m.right_edge_idx) >= num_right_edges_) {
+            ++skipped_invalid;
+            continue;
+        }
+        const Edge_GPU& le = h_left_edges[m.left_edge_idx];
+        const Edge_GPU& re = h_right_edges[m.right_edge_idx];
+        outfile << m.left_edge_idx  << " " << le.location_x << " " << le.location_y << " " << le.orientation << " "
+                << m.right_edge_idx << " " << re.location_x << " " << re.location_y << " " << re.orientation << "\n";
+    }
+    outfile.close();
+
+    std::cout << "Wrote " << (sift_matches.size() - skipped_invalid) << " GPU SIFT matches to "
+              << filename;
+    if (skipped_invalid > 0)
+        std::cout << " (skipped " << skipped_invalid << " out-of-range entries)";
+    std::cout << std::endl;
+}
+
 Stereo_Matches_GPU_Pipeline::~Stereo_Matches_GPU_Pipeline()
 {
     //> h_F aliases fixed storage h_F_row_major_; no need to free it.
+    release_image_textures();
+
     delete[] h_left_img;
     delete[] h_right_img;
     delete[] h_left_edges;
@@ -352,6 +491,8 @@ Stereo_Matches_GPU_Pipeline::~Stereo_Matches_GPU_Pipeline()
     cudacheck( cudaFree(d_left_patches) );
     cudacheck( cudaFree(d_final_matches_passing_NCC_filter) );
     cudacheck( cudaFree(d_final_count_passing_NCC_filter) );
+    if (d_final_matches_passing_SIFT_filter) cudacheck( cudaFree(d_final_matches_passing_SIFT_filter) );
+    if (d_final_count_passing_SIFT_filter) cudacheck( cudaFree(d_final_count_passing_SIFT_filter) );
 
     cudacheck(cudaEventDestroy(start));
     cudacheck(cudaEventDestroy(stop));

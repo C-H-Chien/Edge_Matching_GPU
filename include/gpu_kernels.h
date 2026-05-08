@@ -127,25 +127,46 @@ float epipolar_rasterization_thick_band_pipeline(
 //> GPU kernel pipeline for precompute left edge patches photometry (defined in precompute_left_edge_patches_photometry.cu)
 float precompute_left_edge_patches_photometry_pipeline(
     int             device_id,
-    /* Data live in the host memory */
-    float*          h_left_img,
+    /* Data live in the CUDA texture memory */
+    cudaTextureObject_t left_tex,
     /* Data live in the device memory */
     Precomputed_Edge_Patches_Photometry* &d_left_patches,
     Edge_GPU*       d_left_edges,
     /* Others */
-    int             img_width,
-    int             img_height,
     std::size_t     num_of_left_edges,
     cudaEvent_t     start,
     cudaEvent_t     stop
 );
 
+//> GPU-only SIFT-style descriptor filter (defined in apply_SIFT_descriptor_filter.cu).
+float apply_SIFT_descriptor_filter_pipeline(
+    int                         device_id,
+    /* Data live in the host memory */
+    int                         &h_SIFT_match_count_out,
+    /* Data live in the device memory */
+    cudaTextureObject_t         left_tex,
+    cudaTextureObject_t         right_tex,
+    const Match_by_Edge_Index*  d_ncc_matches,
+    const Edge_GPU*             d_left_edges,
+    const Edge_GPU*             d_right_edges,
+    Match_by_Edge_Index*        &d_final_matches_passing_SIFT_filter,
+    int*                        &d_final_count_passing_SIFT_filter,
+    /* Others */
+    int                         left_img_width,
+    int                         left_img_height,
+    int                         right_img_width,
+    int                         right_img_height,
+    int                         num_ncc_matches,
+    cudaEvent_t                 start,
+    cudaEvent_t                 stop
+);
+
 //> GPU kernel pipeline for apply NCC filter (defined in apply_NCC_on_the_fly.cu)
 float apply_NCC_filter_pipeline(
     int                         device_id,
-    /* Data live in the host memory */
-    float*                      h_right_img,
     int                         &h_NCC_match_count_out,
+    /* Data live in the CUDA texture memory */
+    cudaTextureObject_t         right_tex,
     /* Data live in the device memory */
     const Match_by_Edge_Index*  d_candidate_matches,
     const Edge_GPU*             d_left_edges,
@@ -154,8 +175,6 @@ float apply_NCC_filter_pipeline(
     int*                        &d_match_count_passing_NCC_filter,
     Precomputed_Edge_Patches_Photometry* d_left_patches,
     /* Others */
-    int                         right_img_width,
-    int                         right_img_height,
     int                         num_candidates,
     cudaEvent_t                 start,
     cudaEvent_t                 stop

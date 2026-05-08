@@ -20,6 +20,8 @@ struct Stereo_Matches_GPU_Test_Context {
     const int* d_match_count_passing_EP_LP_OR_filters = nullptr;
     const Match_by_Edge_Index* d_final_matches_passing_NCC_filter = nullptr;
     const int* d_final_count_passing_NCC_filter = nullptr;
+    const Match_by_Edge_Index* d_final_matches_passing_SIFT_filter = nullptr;
+    const int* d_final_count_passing_SIFT_filter = nullptr;
     const Precomputed_Edge_Patches_Photometry* d_left_patches = nullptr;
     const int* d_edge_indices = nullptr;
     const float* h_right_img = nullptr;
@@ -45,6 +47,8 @@ public:
     /** Compare GPU EP+LP+OR matches to Stereo_Matches.cpp (same filters as get_Stereo_Edge_Pairs before SIFT/NCC). */
     static void test_EP_LP_OR_vs_stereo_matches_cpu(const Stereo_Matches_GPU_Test_Context& ctx);
     static void test_ncc_filter(const Stereo_Matches_GPU_Test_Context& ctx);
+    /** Compare GPU SIFT-style filter outputs against an OpenCV cv::SIFT::compute reference (mirrors Stereo_Matches::apply_SIFT_filtering). */
+    static void test_SIFT_descriptor_filter(const Stereo_Matches_GPU_Test_Context& ctx);
 
 private:
     static bool epipolar_line_intersects_image(float a, float b, float c, int W, int H);

@@ -3,10 +3,16 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <sstream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
+#include <opencv2/core.hpp>
+#include <opencv2/features2d.hpp>
+
+#include "Stereo_Iterator.h"
 #include "Stereo_Matches.h"
 
 #ifdef _OPENMP
@@ -867,6 +873,368 @@ void Stereo_Matches_GPU_Validator::test_ncc_filter(const Stereo_Matches_GPU_Test
                     ", cpu_unique=" + std::to_string(cpu_pass_set.size()) +
                     ", recall=" + std::to_string(recall) +
                     ", duplicates=" + std::to_string(gpu_duplicates) + ")");
+    }
+}
+
+namespace {
+
+//> Replicates Utility::get_Orthogonal_Shifted_Points in float for the validator (avoids
+//> dragging the full Utility object into this translation unit).
+inline void cpu_orthogonal_shifted_points(double cx, double cy, double orientation, double shift,
+                                          cv::Point2d& p_plus, cv::Point2d& p_minus)
+{
+    const double s = std::sin(orientation);
+    const double c = std::cos(orientation);
+    p_plus  = cv::Point2d(cx + shift * s,  cy - shift * c);
+    p_minus = cv::Point2d(cx - shift * s,  cy + shift * c);
+}
+
+//> Compute the two SIFT descriptors per edge (at the two orthogonal shift points) using
+//> default cv::SIFT::create() so we exactly mirror Stereo_Matches::augment_Edge_Data and
+//> Stereo_Matches::apply_SIFT_filtering. `valid[k] == 1` iff both rows came back from
+//> sift->compute (matches the CPU pipeline's "rows == 2" check).
+void compute_cpu_sift_pair_descriptors(const cv::Mat& image,
+                                       const std::vector<Edge>& edges,
+                                       const std::vector<int>& edge_indices,
+                                       std::vector<cv::Mat>& desc_plus,
+                                       std::vector<cv::Mat>& desc_minus,
+                                       std::vector<unsigned char>& valid)
+{
+    const std::size_t N = edge_indices.size();
+    desc_plus.assign(N, cv::Mat());
+    desc_minus.assign(N, cv::Mat());
+    valid.assign(N, 0);
+
+    if (N == 0 || image.empty())
+        return;
+
+    //> Mirror Stereo_Matches::augment_Edge_Data: feed the raw undistorted image directly to
+    //> cv::SIFT::compute (it handles CV_8UC1 / CV_8UC3 internally). Avoid any conversion that
+    //> would diverge from the CPU reference.
+    const cv::Mat& sift_image = image;
+
+    const std::size_t edges_size = edges.size();
+
+#pragma omp parallel
+    {
+        cv::Ptr<cv::SIFT> thread_sift = cv::SIFT::create();
+#pragma omp for schedule(dynamic)
+        for (long long k = 0; k < static_cast<long long>(N); ++k) {
+            const int idx = edge_indices[static_cast<std::size_t>(k)];
+            if (idx < 0 || static_cast<std::size_t>(idx) >= edges_size)
+                continue;
+            const Edge& e = edges[static_cast<std::size_t>(idx)];
+
+            cv::Point2d p_plus, p_minus;
+            cpu_orthogonal_shifted_points(e.location.x, e.location.y, e.orientation,
+                                          static_cast<double>(SIFT_ORTHOGONAL_SHIFT), p_plus, p_minus);
+
+            std::vector<cv::KeyPoint> kps;
+            kps.emplace_back(cv::Point2f(static_cast<float>(p_plus.x), static_cast<float>(p_plus.y)),
+                             1.0f, static_cast<float>(180.0 / M_PI * e.orientation));
+            kps.emplace_back(cv::Point2f(static_cast<float>(p_minus.x), static_cast<float>(p_minus.y)),
+                             1.0f, static_cast<float>(180.0 / M_PI * e.orientation));
+
+            cv::Mat descriptors;
+            try {
+                thread_sift->compute(sift_image, kps, descriptors);
+            } catch (...) {
+                continue;
+            }
+            //> cv::SIFT::compute may drop keypoints near the border. We require both rows present
+            //> to mirror the CPU pipeline's "rows == 2" gate; otherwise we leave valid=0 and let
+            //> the caller treat the pair as a CPU pass-through (fail-safe).
+            if (descriptors.rows == 2 && descriptors.cols == 128 && descriptors.type() == CV_32F) {
+                desc_plus[static_cast<std::size_t>(k)]  = descriptors.row(0).clone();
+                desc_minus[static_cast<std::size_t>(k)] = descriptors.row(1).clone();
+                valid[static_cast<std::size_t>(k)] = 1;
+            }
+        }
+    }
+}
+
+} // namespace
+
+void Stereo_Matches_GPU_Validator::test_SIFT_descriptor_filter(const Stereo_Matches_GPU_Test_Context& ctx)
+{
+    if (ctx.d_final_matches_passing_NCC_filter == nullptr || ctx.d_final_count_passing_NCC_filter == nullptr) {
+        LOG_ERROR("test_SIFT_descriptor_filter: NCC filter outputs missing in context; skipping");
+        return;
+    }
+    if (ctx.d_final_matches_passing_SIFT_filter == nullptr || ctx.d_final_count_passing_SIFT_filter == nullptr) {
+        LOG_ERROR("test_SIFT_descriptor_filter: GPU SIFT filter outputs missing in context; skipping");
+        return;
+    }
+    if (ctx.stereo_frame_for_cpu == nullptr) {
+        LOG_ERROR("test_SIFT_descriptor_filter: stereo_frame_for_cpu missing in context; skipping");
+        return;
+    }
+
+    const StereoFrame& sf = *ctx.stereo_frame_for_cpu;
+    //> Match Stereo_Matches::augment_Edge_Data and apply_SIFT_filtering: feed the undistorted
+    //> image straight into cv::SIFT::compute (which does its own internal Gaussian smoothing
+    //> via the SIFT pyramid). Falls back to the raw distorted image only if undistorted is missing.
+    const cv::Mat& left_img  = !sf.left_image_undistorted.empty()  ? sf.left_image_undistorted  : sf.left_image;
+    const cv::Mat& right_img = !sf.right_image_undistorted.empty() ? sf.right_image_undistorted : sf.right_image;
+    if (left_img.empty() || right_img.empty()) {
+        LOG_ERROR("test_SIFT_descriptor_filter: stereo frame images are empty; skipping");
+        return;
+    }
+
+    int ncc_count = 0;
+    if (cudaMemcpy(&ncc_count, ctx.d_final_count_passing_NCC_filter, sizeof(int), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        LOG_ERROR("test_SIFT_descriptor_filter: cudaMemcpy d_final_count_passing_NCC_filter failed");
+        return;
+    }
+    int sift_count = 0;
+    if (cudaMemcpy(&sift_count, ctx.d_final_count_passing_SIFT_filter, sizeof(int), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        LOG_ERROR("test_SIFT_descriptor_filter: cudaMemcpy d_final_count_passing_SIFT_filter failed");
+        return;
+    }
+    if (ncc_count < 0 || sift_count < 0) {
+        LOG_ERROR("test_SIFT_descriptor_filter: invalid negative match counts (ncc=" + std::to_string(ncc_count) +
+                  ", sift=" + std::to_string(sift_count) + ")");
+        return;
+    }
+    if (ncc_count == 0) {
+        LOG_TEST("SIFT_descriptor_filter: 0 NCC inputs to compare against; nothing to validate");
+        return;
+    }
+    if (sift_count > ncc_count) {
+        LOG_ERROR("test_SIFT_descriptor_filter: GPU SIFT pass count exceeds NCC input count (sift=" +
+                  std::to_string(sift_count) + ", ncc=" + std::to_string(ncc_count) + ")");
+        return;
+    }
+
+    std::vector<Match_by_Edge_Index> ncc_matches(static_cast<std::size_t>(ncc_count));
+    if (cudaMemcpy(ncc_matches.data(), ctx.d_final_matches_passing_NCC_filter,
+                   static_cast<std::size_t>(ncc_count) * sizeof(Match_by_Edge_Index),
+                   cudaMemcpyDeviceToHost) != cudaSuccess) {
+        LOG_ERROR("test_SIFT_descriptor_filter: cudaMemcpy d_final_matches_passing_NCC_filter failed");
+        return;
+    }
+    std::vector<Match_by_Edge_Index> sift_matches(static_cast<std::size_t>(sift_count));
+    if (sift_count > 0 &&
+        cudaMemcpy(sift_matches.data(), ctx.d_final_matches_passing_SIFT_filter,
+                   static_cast<std::size_t>(sift_count) * sizeof(Match_by_Edge_Index),
+                   cudaMemcpyDeviceToHost) != cudaSuccess) {
+        LOG_ERROR("test_SIFT_descriptor_filter: cudaMemcpy d_final_matches_passing_SIFT_filter failed");
+        return;
+    }
+
+    //> Compact the unique left/right edges referenced by the NCC inputs so we only ever compute
+    //> one cv::SIFT::compute call per edge (mirrors how the CPU pipeline reuses left descriptors).
+    std::unordered_map<int, int> left_to_compact;
+    std::unordered_map<int, int> right_to_compact;
+    std::vector<int> unique_left;
+    std::vector<int> unique_right;
+    left_to_compact.reserve(static_cast<std::size_t>(ncc_count));
+    right_to_compact.reserve(static_cast<std::size_t>(ncc_count));
+    unique_left.reserve(static_cast<std::size_t>(ncc_count));
+    unique_right.reserve(static_cast<std::size_t>(ncc_count));
+
+    std::size_t ncc_invalid_idx = 0;
+    for (const auto& m : ncc_matches) {
+        if (m.left_edge_idx < 0 || m.left_edge_idx >= static_cast<int>(sf.left_edges.size()) ||
+            m.right_edge_idx < 0 || m.right_edge_idx >= static_cast<int>(sf.right_edges.size())) {
+            ++ncc_invalid_idx;
+            continue;
+        }
+        if (left_to_compact.find(m.left_edge_idx) == left_to_compact.end()) {
+            left_to_compact[m.left_edge_idx] = static_cast<int>(unique_left.size());
+            unique_left.push_back(m.left_edge_idx);
+        }
+        if (right_to_compact.find(m.right_edge_idx) == right_to_compact.end()) {
+            right_to_compact[m.right_edge_idx] = static_cast<int>(unique_right.size());
+            unique_right.push_back(m.right_edge_idx);
+        }
+    }
+
+    std::vector<cv::Mat> left_desc_plus, left_desc_minus;
+    std::vector<unsigned char> left_valid;
+    std::vector<cv::Mat> right_desc_plus, right_desc_minus;
+    std::vector<unsigned char> right_valid;
+    compute_cpu_sift_pair_descriptors(left_img,  sf.left_edges,  unique_left,  left_desc_plus,  left_desc_minus,  left_valid);
+    compute_cpu_sift_pair_descriptors(right_img, sf.right_edges, unique_right, right_desc_plus, right_desc_minus, right_valid);
+
+    //> Build CPU pass set with the same predicate as Stereo_Matches::apply_SIFT_filtering.
+    //> Pairs whose descriptors failed extraction are passed through (CPU fail-safe), so they
+    //> always count as CPU passes — matching the existing CPU semantics, not the GPU one.
+    const double sift_thresh = static_cast<double>(SIFT_THRESHOLD);
+    std::unordered_set<unsigned long long> cpu_pass_set;
+    std::unordered_map<unsigned long long, double> cpu_min_dist_by_key;
+    cpu_pass_set.reserve(ncc_matches.size());
+    cpu_min_dist_by_key.reserve(ncc_matches.size());
+
+    std::size_t cpu_passthrough = 0;
+    std::size_t cpu_evaluable = 0;
+    double sum_pass_dist = 0.0;
+    double sum_fail_dist = 0.0;
+    std::size_t pass_count = 0;
+    std::size_t fail_count = 0;
+
+    for (const auto& m : ncc_matches) {
+        auto itl = left_to_compact.find(m.left_edge_idx);
+        auto itr = right_to_compact.find(m.right_edge_idx);
+        if (itl == left_to_compact.end() || itr == right_to_compact.end()) {
+            //> ncc_invalid_idx case: we still let the GPU set decide; do not add to CPU set.
+            continue;
+        }
+        const std::size_t li = static_cast<std::size_t>(itl->second);
+        const std::size_t ri = static_cast<std::size_t>(itr->second);
+        const auto key = pair_key(m.left_edge_idx, m.right_edge_idx);
+
+        if (!left_valid[li] || !right_valid[ri]) {
+            cpu_pass_set.insert(key);
+            cpu_min_dist_by_key[key] = -1.0;
+            ++cpu_passthrough;
+            continue;
+        }
+        ++cpu_evaluable;
+        const double d1 = cv::norm(left_desc_plus[li],  right_desc_plus[ri],  cv::NORM_L2);
+        const double d2 = cv::norm(left_desc_minus[li], right_desc_plus[ri],  cv::NORM_L2);
+        const double d3 = cv::norm(left_desc_plus[li],  right_desc_minus[ri], cv::NORM_L2);
+        const double d4 = cv::norm(left_desc_minus[li], right_desc_minus[ri], cv::NORM_L2);
+        const double dmin = std::min({d1, d2, d3, d4});
+        cpu_min_dist_by_key[key] = dmin;
+        if (dmin < sift_thresh) {
+            cpu_pass_set.insert(key);
+            sum_pass_dist += dmin;
+            ++pass_count;
+        } else {
+            sum_fail_dist += dmin;
+            ++fail_count;
+        }
+    }
+
+    std::unordered_set<unsigned long long> gpu_pass_set;
+    gpu_pass_set.reserve(sift_matches.size());
+    std::size_t gpu_duplicates = 0;
+    std::size_t gpu_invalid_idx = 0;
+    std::size_t gpu_not_in_ncc = 0;
+    std::unordered_set<unsigned long long> ncc_set;
+    ncc_set.reserve(ncc_matches.size());
+    for (const auto& m : ncc_matches)
+        ncc_set.insert(pair_key(m.left_edge_idx, m.right_edge_idx));
+    for (const auto& m : sift_matches) {
+        if (m.left_edge_idx < 0 || m.left_edge_idx >= static_cast<int>(sf.left_edges.size()) ||
+            m.right_edge_idx < 0 || m.right_edge_idx >= static_cast<int>(sf.right_edges.size())) {
+            ++gpu_invalid_idx;
+            continue;
+        }
+        const auto key = pair_key(m.left_edge_idx, m.right_edge_idx);
+        if (!gpu_pass_set.insert(key).second)
+            ++gpu_duplicates;
+        if (!ncc_set.count(key))
+            ++gpu_not_in_ncc;
+    }
+
+    std::size_t intersection = 0;
+    std::size_t gpu_only = 0;
+    std::size_t cpu_only = 0;
+    double sum_dist_gpu_only = 0.0;
+    double sum_dist_cpu_only = 0.0;
+    std::size_t cnt_dist_gpu_only = 0;
+    std::size_t cnt_dist_cpu_only = 0;
+    for (const auto k : gpu_pass_set) {
+        if (cpu_pass_set.count(k)) {
+            ++intersection;
+        } else {
+            ++gpu_only;
+            auto it = cpu_min_dist_by_key.find(k);
+            if (it != cpu_min_dist_by_key.end() && it->second >= 0.0) {
+                sum_dist_gpu_only += it->second;
+                ++cnt_dist_gpu_only;
+            }
+        }
+    }
+    for (const auto k : cpu_pass_set) {
+        if (gpu_pass_set.count(k))
+            continue;
+        ++cpu_only;
+        auto it = cpu_min_dist_by_key.find(k);
+        if (it != cpu_min_dist_by_key.end() && it->second >= 0.0) {
+            sum_dist_cpu_only += it->second;
+            ++cnt_dist_cpu_only;
+        }
+    }
+
+    const double recall = cpu_pass_set.empty()
+                              ? 1.0
+                              : static_cast<double>(intersection) / static_cast<double>(cpu_pass_set.size());
+    const double precision = gpu_pass_set.empty()
+                                 ? 1.0
+                                 : static_cast<double>(intersection) / static_cast<double>(gpu_pass_set.size());
+    const std::size_t union_size = cpu_pass_set.size() + gpu_pass_set.size() - intersection;
+    const double iou = (union_size == 0) ? 1.0 : static_cast<double>(intersection) / static_cast<double>(union_size);
+    const double mean_pass_dist = (pass_count == 0) ? 0.0 : sum_pass_dist / static_cast<double>(pass_count);
+    const double mean_fail_dist = (fail_count == 0) ? 0.0 : sum_fail_dist / static_cast<double>(fail_count);
+    const double mean_dist_gpu_only = (cnt_dist_gpu_only == 0) ? 0.0 : sum_dist_gpu_only / static_cast<double>(cnt_dist_gpu_only);
+    const double mean_dist_cpu_only = (cnt_dist_cpu_only == 0) ? 0.0 : sum_dist_cpu_only / static_cast<double>(cnt_dist_cpu_only);
+
+    if (gpu_invalid_idx > 0 || gpu_not_in_ncc > 0 || gpu_duplicates > 0) {
+        LOG_ERROR("SIFT_descriptor_filter: GPU produced invalid/unexpected matches (invalid_idx=" +
+                  std::to_string(gpu_invalid_idx) + ", not_in_ncc=" + std::to_string(gpu_not_in_ncc) +
+                  ", duplicates=" + std::to_string(gpu_duplicates) + ")");
+    }
+
+    std::ostringstream summary;
+    summary << "SIFT_descriptor_filter: ncc_inputs=" << ncc_count
+            << " gpu_pass=" << gpu_pass_set.size()
+            << " cpu_pass=" << cpu_pass_set.size()
+            << " (cpu_evaluable=" << cpu_evaluable
+            << ", cpu_passthrough=" << cpu_passthrough << ")"
+            << " | intersection=" << intersection
+            << " gpu_only=" << gpu_only
+            << " cpu_only=" << cpu_only
+            << " | recall=" << recall
+            << " precision=" << precision
+            << " IoU=" << iou
+            << " | cpu_dist[mean(pass)=" << mean_pass_dist
+            << ", mean(fail)=" << mean_fail_dist
+            << ", mean(gpu_only)=" << mean_dist_gpu_only
+            << ", mean(cpu_only)=" << mean_dist_cpu_only
+            << "]"
+            << " | thresh=" << sift_thresh;
+    if (ncc_invalid_idx > 0)
+        summary << " ncc_invalid_idx=" << ncc_invalid_idx;
+
+    if (gpu_only == 0 && cpu_only == 0) {
+        LOG_TEST(summary.str());
+    }
+    else {
+        LOG_WARNING(summary.str());
+    }
+
+    //> Print up to a handful of representative disagreements so the user can eyeball whether the
+    //> mismatches cluster around the threshold (calibration) or are systemic (descriptor mismatch).
+    std::size_t printed = 0;
+    for (const auto& m : sift_matches) {
+        if (printed >= 5)
+            break;
+        const auto k = pair_key(m.left_edge_idx, m.right_edge_idx);
+        if (!gpu_pass_set.count(k))
+            continue;
+        if (cpu_pass_set.count(k))
+            continue;
+        const auto it = cpu_min_dist_by_key.find(k);
+        const double cpu_d = (it == cpu_min_dist_by_key.end()) ? -1.0 : it->second;
+        std::cerr << "[TEST] SIFT_descriptor_filter gpu_only pair=(" << m.left_edge_idx << "," << m.right_edge_idx
+                  << ") cpu_min_L2=" << cpu_d << " thresh=" << sift_thresh << std::endl;
+        ++printed;
+    }
+    printed = 0;
+    for (const auto& m : ncc_matches) {
+        if (printed >= 5)
+            break;
+        const auto k = pair_key(m.left_edge_idx, m.right_edge_idx);
+        if (!cpu_pass_set.count(k) || gpu_pass_set.count(k))
+            continue;
+        const auto it = cpu_min_dist_by_key.find(k);
+        const double cpu_d = (it == cpu_min_dist_by_key.end()) ? -1.0 : it->second;
+        std::cerr << "[TEST] SIFT_descriptor_filter cpu_only pair=(" << m.left_edge_idx << "," << m.right_edge_idx
+                  << ") cpu_min_L2=" << cpu_d << " thresh=" << sift_thresh << std::endl;
+        ++printed;
     }
 }
 

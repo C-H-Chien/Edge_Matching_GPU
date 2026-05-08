@@ -1549,6 +1549,19 @@ Frame_Evaluation_Metrics Stereo_Matches::get_Stereo_Edge_Pairs(Dataset::Ptr data
                                             evaluation_statistics);
         frame_metrics.stages.push_back({"Orientation", {recall_per_image, precision_per_image, precision_pair_per_image, num_of_target_edges_per_source_edge_avg}});
     }
+
+    //> Apply NCC filtering
+    // start_time = std::chrono::high_resolution_clock::now();
+    apply_NCC_Filtering(stereo_frame_edge_pairs, "output_files", frame_idx);
+    // end_time = std::chrono::high_resolution_clock::now();
+    // timing_statistics.time_NCC = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+    if (dataset->has_gt()) {
+        Evaluate_Stereo_Edge_Correspondences(stereo_frame_edge_pairs, frame_idx, "NCC Filtering",
+                                         recall_per_image, precision_per_image, precision_pair_per_image, num_of_target_edges_per_source_edge_avg,
+                                         evaluation_statistics);
+        frame_metrics.stages.push_back({"NCC", {recall_per_image, precision_per_image, precision_pair_per_image, num_of_target_edges_per_source_edge_avg}});
+    }
+
     //> Augment edge data with SIFT descriptors
     augment_Edge_Data(stereo_frame_edge_pairs, true);
 
@@ -1562,18 +1575,6 @@ Frame_Evaluation_Metrics Stereo_Matches::get_Stereo_Edge_Pairs(Dataset::Ptr data
                                             recall_per_image, precision_per_image, precision_pair_per_image, num_of_target_edges_per_source_edge_avg,
                                             evaluation_statistics);
         frame_metrics.stages.push_back({"SIFT", {recall_per_image, precision_per_image, precision_pair_per_image, num_of_target_edges_per_source_edge_avg}});
-    }
-
-    //> Apply NCC filtering
-    // start_time = std::chrono::high_resolution_clock::now();
-    apply_NCC_Filtering(stereo_frame_edge_pairs, "output_files", frame_idx);
-    // end_time = std::chrono::high_resolution_clock::now();
-    // timing_statistics.time_NCC = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
-    if (dataset->has_gt()) {
-        Evaluate_Stereo_Edge_Correspondences(stereo_frame_edge_pairs, frame_idx, "NCC Filtering",
-                                         recall_per_image, precision_per_image, precision_pair_per_image, num_of_target_edges_per_source_edge_avg,
-                                         evaluation_statistics);
-        frame_metrics.stages.push_back({"NCC", {recall_per_image, precision_per_image, precision_pair_per_image, num_of_target_edges_per_source_edge_avg}});
     }
 
     //> Apply Best-Nearly-Best test with both NCC and SIFT scores

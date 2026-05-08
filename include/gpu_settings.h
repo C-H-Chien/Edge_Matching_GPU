@@ -18,6 +18,14 @@
 //> Orthogonal patch-center offset; CPU uses ORTHOGONAL_SHIFT_MAG in Utility::get_Orthogonal_Shifted_Points(edge)
 #define OFFSET_DIST                     (ORTHOGONAL_SHIFT_MAG)
 
+//> GPU SIFT-style descriptor parameters
+#define SIFT_ORTHOGONAL_SHIFT (8.0)
+#define SIFT_DESCRIPTOR_GRID_SIZE (4)
+#define SIFT_DESCRIPTOR_ORIENTATION_BINS (8)
+#define SIFT_DESCRIPTOR_DIM (SIFT_DESCRIPTOR_GRID_SIZE * SIFT_DESCRIPTOR_GRID_SIZE * SIFT_DESCRIPTOR_ORIENTATION_BINS)
+#define SIFT_DESCRIPTOR_SAMPLE_WIDTH (16)
+#define SIFT_DESCRIPTOR_SCALE (512.0)
+
 //> CUDA error check
 #define cudacheck( a )  do { \
     cudaError_t e = a; \
