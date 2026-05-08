@@ -41,6 +41,8 @@ public:
     float precompute_left_edge_patches_photometry();
     float apply_NCC_filter();
     float apply_SIFT_descriptor_filter();
+    float apply_BNB_NCC_filter();
+    float apply_BNB_SIFT_filter();
 
     //> Writes the GPU SIFT-passing matches for the current frame to
     //> `<dataset_output_path>/gpu_sift_matches_frame_<frame_idx>.txt` as
@@ -70,6 +72,8 @@ private:
     int h_match_count_passing_EP_LP_OR_filters = 0;
     int h_match_count_passing_NCC_filter = 0;
     int h_match_count_passing_SIFT_filter = 0;
+    int h_match_count_passing_BNB_NCC_filter = 0;
+    int h_match_count_passing_BNB_SIFT_filter = 0;
     float h_F_row_major_[9] = {};
     float* h_F = h_F_row_major_;
     Match_by_Edge_Index* h_matches_out = nullptr;
@@ -87,8 +91,16 @@ private:
     Precomputed_Edge_Patches_Photometry* d_left_patches = nullptr;
     int* d_final_count_passing_NCC_filter = nullptr;
     Match_by_Edge_Index* d_final_matches_passing_NCC_filter = nullptr;
+    float* d_ncc_scores_passing_NCC_filter = nullptr;
     int* d_final_count_passing_SIFT_filter = nullptr;
     Match_by_Edge_Index* d_final_matches_passing_SIFT_filter = nullptr;
+    float* d_sift_scores_passing_SIFT_filter = nullptr;
+    int* d_final_count_passing_BNB_NCC_filter = nullptr;
+    Match_by_Edge_Index* d_final_matches_passing_BNB_NCC_filter = nullptr;
+    float* d_ncc_scores_passing_BNB_NCC_filter = nullptr;
+    int* d_final_count_passing_BNB_SIFT_filter = nullptr;
+    Match_by_Edge_Index* d_final_matches_passing_BNB_SIFT_filter = nullptr;
+    float* d_sift_scores_passing_BNB_SIFT_filter = nullptr;
     CUDA_Texture_Wrapper left_image_texture_ = {nullptr, 0};
     CUDA_Texture_Wrapper right_image_texture_ = {nullptr, 0};
     bool b_image_textures_ready_ = false;

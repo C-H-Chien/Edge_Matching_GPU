@@ -125,6 +125,7 @@ void apply_SIFT_descriptor_filter_kernel(
     const Edge_GPU* d_right_edges,
     Match_by_Edge_Index* d_final_matches,
     int* d_final_count,
+    float* d_final_scores,
     cudaTextureObject_t left_tex,
     cudaTextureObject_t right_tex,
     int left_width,
@@ -174,6 +175,7 @@ void apply_SIFT_descriptor_filter_kernel(
     if (min_dist < static_cast<float>(SIFT_THRESHOLD)) {
         const int out_idx = atomicAdd(d_final_count, 1);
         d_final_matches[out_idx] = candidate;
+        d_final_scores[out_idx] = min_dist;
     }
 }
 
@@ -184,6 +186,7 @@ void apply_SIFT_descriptor_filter_kernel_launcher(
     const Edge_GPU* d_right_edges,
     Match_by_Edge_Index* d_final_matches,
     int* d_final_count,
+    float* d_final_scores,
     cudaTextureObject_t left_tex,
     cudaTextureObject_t right_tex,
     int left_width,
@@ -208,6 +211,7 @@ void apply_SIFT_descriptor_filter_kernel_launcher(
         reinterpret_cast<void*>(&d_right_edges),
         reinterpret_cast<void*>(&d_final_matches),
         reinterpret_cast<void*>(&d_final_count),
+        reinterpret_cast<void*>(&d_final_scores),
         reinterpret_cast<void*>(&left_tex),
         reinterpret_cast<void*>(&right_tex),
         reinterpret_cast<void*>(&left_width),
@@ -232,6 +236,7 @@ float apply_SIFT_descriptor_filter_pipeline(
     const Edge_GPU*             d_right_edges,
     Match_by_Edge_Index*        &d_final_matches_passing_SIFT_filter,
     int*                        &d_final_count_passing_SIFT_filter,
+    float*                      &d_sift_scores_out,
     /* Others */
     int                         left_img_width,
     int                         left_img_height,
@@ -246,6 +251,7 @@ float apply_SIFT_descriptor_filter_pipeline(
     //> Allocate memory for the final matches and number of matches passing the SIFT filter
     cudacheck(cudaMalloc(&d_final_matches_passing_SIFT_filter, static_cast<size_t>(num_ncc_matches) * sizeof(Match_by_Edge_Index)));
     cudacheck(cudaMalloc(&d_final_count_passing_SIFT_filter, sizeof(int)));
+    cudacheck(cudaMalloc(&d_sift_scores_out, static_cast<size_t>(num_ncc_matches) * sizeof(float)));
 
     //> Initialize the number of matches passing the SIFT filter to 0
     cudacheck(cudaMemset(d_final_count_passing_SIFT_filter, 0, sizeof(int)));
@@ -255,7 +261,7 @@ float apply_SIFT_descriptor_filter_pipeline(
 
     //> Launch the SIFT descriptor filter kernel
     apply_SIFT_descriptor_filter_kernel_launcher( device_id, d_ncc_matches, d_left_edges, d_right_edges, d_final_matches_passing_SIFT_filter,
-                                                  d_final_count_passing_SIFT_filter, left_tex, right_tex, left_img_width, left_img_height,
+                                                  d_final_count_passing_SIFT_filter, d_sift_scores_out, left_tex, right_tex, left_img_width, left_img_height,
                                                   right_img_width, right_img_height, num_ncc_matches );
     cudacheck(cudaDeviceSynchronize());
 

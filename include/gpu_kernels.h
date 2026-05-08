@@ -151,6 +151,7 @@ float apply_SIFT_descriptor_filter_pipeline(
     const Edge_GPU*             d_right_edges,
     Match_by_Edge_Index*        &d_final_matches_passing_SIFT_filter,
     int*                        &d_final_count_passing_SIFT_filter,
+    float*                      &d_sift_scores_out,
     /* Others */
     int                         left_img_width,
     int                         left_img_height,
@@ -173,9 +174,27 @@ float apply_NCC_filter_pipeline(
     const Edge_GPU*             d_right_edges,
     Match_by_Edge_Index*        &d_final_matches_passing_NCC_filter,
     int*                        &d_match_count_passing_NCC_filter,
+    float*                      &d_ncc_scores_out,
     Precomputed_Edge_Patches_Photometry* d_left_patches,
     /* Others */
     int                         num_candidates,
+    cudaEvent_t                 start,
+    cudaEvent_t                 stop
+);
+
+//> GPU kernel pipeline for Best-Nearly-Best filtering (defined in apply_best_nearly_best_filter.cu)
+float apply_best_nearly_best_filter_pipeline(
+    int                         device_id,
+    int                         &h_bnb_match_count_out,
+    const Match_by_Edge_Index*  d_candidate_matches,
+    const float*                d_candidate_scores,
+    Match_by_Edge_Index*        &d_final_matches_passing_bnb_filter,
+    float*                      &d_final_scores_passing_bnb_filter,
+    int*                        &d_final_count_passing_bnb_filter,
+    int                         num_candidates,
+    int                         num_left_edges,
+    float                       ratio_threshold,
+    bool                        higher_is_better,
     cudaEvent_t                 start,
     cudaEvent_t                 stop
 );

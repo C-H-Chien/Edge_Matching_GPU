@@ -19,6 +19,7 @@ if(ENABLE_CUDA)
         gpu_kernels/precompute_left_edge_patches_photometry.cu
         gpu_kernels/apply_NCC_on_the_fly.cu
         gpu_kernels/apply_SIFT_descriptor_filter.cu
+        gpu_kernels/apply_best_nearly_best_filter.cu
     )
 endif()
 

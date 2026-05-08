@@ -230,6 +230,12 @@ void Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU() {
     #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
     test_SIFT_descriptor_filter();
     #endif
+
+    //> Apply Best-Nearly-Best in GPU for NCC and SIFT scores.
+    apply_BNB_NCC_filter();
+    std::cout << "Number of matches passing GPU BNB-NCC filter: " << h_match_count_passing_BNB_NCC_filter << std::endl;
+    apply_BNB_SIFT_filter();
+    std::cout << "Number of matches passing GPU BNB-SIFT filter: " << h_match_count_passing_BNB_SIFT_filter << std::endl;
 }
 
 float Stereo_Matches_GPU_Pipeline::build_edge_spatial_map() {
@@ -324,6 +330,7 @@ float Stereo_Matches_GPU_Pipeline::apply_NCC_filter() {
         d_right_edges,
         d_final_matches_passing_NCC_filter,
         d_final_count_passing_NCC_filter,
+        d_ncc_scores_passing_NCC_filter,
         d_left_patches,
         num_candidates,
         start,
@@ -350,11 +357,66 @@ float Stereo_Matches_GPU_Pipeline::apply_SIFT_descriptor_filter() {
         d_right_edges,
         d_final_matches_passing_SIFT_filter,
         d_final_count_passing_SIFT_filter,
+        d_sift_scores_passing_SIFT_filter,
         img_left_width,
         img_left_height,
         img_right_width,
         img_right_height,
         h_match_count_passing_NCC_filter,
+        start,
+        stop
+    );
+}
+
+float Stereo_Matches_GPU_Pipeline::apply_BNB_NCC_filter() {
+
+    //> Sanity check
+    if (h_match_count_passing_NCC_filter <= 0 || d_ncc_scores_passing_NCC_filter == nullptr) {
+        LOG_ERROR("Something's wrong: zero matches passing NCC filter or NCC scores are not allocated");
+        h_match_count_passing_BNB_NCC_filter = 0;
+        return -1.0f;
+    }
+
+    //> Reuse the best-and-nearly-best filter kernel for NCC similarities
+    return apply_best_nearly_best_filter_pipeline(
+        device_id,
+        h_match_count_passing_BNB_NCC_filter,
+        d_final_matches_passing_NCC_filter,
+        d_ncc_scores_passing_NCC_filter,
+        d_final_matches_passing_BNB_NCC_filter,
+        d_ncc_scores_passing_BNB_NCC_filter,
+        d_final_count_passing_BNB_NCC_filter,
+        h_match_count_passing_NCC_filter,
+        static_cast<int>(num_left_edges_),
+        static_cast<float>(BNB_NCC),
+        true,
+        start,
+        stop
+    );
+}
+
+float Stereo_Matches_GPU_Pipeline::apply_BNB_SIFT_filter() {
+
+    //> Sanity check
+    if (h_match_count_passing_SIFT_filter <= 0 || d_sift_scores_passing_SIFT_filter == nullptr) {
+        LOG_ERROR("Something's wrong: zero matches passing SIFT filter or SIFT scores are not allocated");
+        h_match_count_passing_BNB_SIFT_filter = 0;
+        return 0.0f;
+    }
+
+    //> Reuse the best-and-nearly-best filter kernel for SIFT similarities
+    return apply_best_nearly_best_filter_pipeline(
+        device_id,
+        h_match_count_passing_BNB_SIFT_filter,
+        d_final_matches_passing_SIFT_filter,
+        d_sift_scores_passing_SIFT_filter,
+        d_final_matches_passing_BNB_SIFT_filter,
+        d_sift_scores_passing_BNB_SIFT_filter,
+        d_final_count_passing_BNB_SIFT_filter,
+        h_match_count_passing_SIFT_filter,
+        static_cast<int>(num_left_edges_),
+        static_cast<float>(BNB_SIFT),
+        false,
         start,
         stop
     );
@@ -410,12 +472,17 @@ void Stereo_Matches_GPU_Pipeline::test_SIFT_descriptor_filter() const {
 
 void Stereo_Matches_GPU_Pipeline::write_sift_matches_to_file(size_t frame_idx) const
 {
-    if (d_final_matches_passing_SIFT_filter == nullptr || d_final_count_passing_SIFT_filter == nullptr) {
-        LOG_WARNING("write_sift_matches_to_file: GPU SIFT outputs not allocated; skipping");
+    const Match_by_Edge_Index* d_matches_to_write =
+        (d_final_matches_passing_BNB_SIFT_filter != nullptr) ? d_final_matches_passing_BNB_SIFT_filter : d_final_matches_passing_SIFT_filter;
+    const int* d_count_to_write =
+        (d_final_count_passing_BNB_SIFT_filter != nullptr) ? d_final_count_passing_BNB_SIFT_filter : d_final_count_passing_SIFT_filter;
+
+    if (d_matches_to_write == nullptr || d_count_to_write == nullptr) {
+        LOG_WARNING("write_sift_matches_to_file: GPU SIFT/BNB outputs not allocated; skipping");
         return;
     }
     int sift_count = 0;
-    cudaError_t err = cudaMemcpy(&sift_count, d_final_count_passing_SIFT_filter, sizeof(int), cudaMemcpyDeviceToHost);
+    cudaError_t err = cudaMemcpy(&sift_count, d_count_to_write, sizeof(int), cudaMemcpyDeviceToHost);
     if (err != cudaSuccess) {
         LOG_ERROR(std::string("write_sift_matches_to_file: cudaMemcpy d_final_count_passing_SIFT_filter failed: ") + cudaGetErrorString(err));
         return;
@@ -427,7 +494,7 @@ void Stereo_Matches_GPU_Pipeline::write_sift_matches_to_file(size_t frame_idx) c
 
     std::vector<Match_by_Edge_Index> sift_matches(static_cast<size_t>(sift_count));
     if (sift_count > 0) {
-        err = cudaMemcpy(sift_matches.data(), d_final_matches_passing_SIFT_filter,
+        err = cudaMemcpy(sift_matches.data(), d_matches_to_write,
                          static_cast<size_t>(sift_count) * sizeof(Match_by_Edge_Index),
                          cudaMemcpyDeviceToHost);
         if (err != cudaSuccess) {
@@ -491,8 +558,16 @@ Stereo_Matches_GPU_Pipeline::~Stereo_Matches_GPU_Pipeline()
     cudacheck( cudaFree(d_left_patches) );
     cudacheck( cudaFree(d_final_matches_passing_NCC_filter) );
     cudacheck( cudaFree(d_final_count_passing_NCC_filter) );
+    if (d_ncc_scores_passing_NCC_filter) cudacheck( cudaFree(d_ncc_scores_passing_NCC_filter) );
     if (d_final_matches_passing_SIFT_filter) cudacheck( cudaFree(d_final_matches_passing_SIFT_filter) );
     if (d_final_count_passing_SIFT_filter) cudacheck( cudaFree(d_final_count_passing_SIFT_filter) );
+    if (d_sift_scores_passing_SIFT_filter) cudacheck( cudaFree(d_sift_scores_passing_SIFT_filter) );
+    if (d_final_matches_passing_BNB_NCC_filter) cudacheck( cudaFree(d_final_matches_passing_BNB_NCC_filter) );
+    if (d_final_count_passing_BNB_NCC_filter) cudacheck( cudaFree(d_final_count_passing_BNB_NCC_filter) );
+    if (d_ncc_scores_passing_BNB_NCC_filter) cudacheck( cudaFree(d_ncc_scores_passing_BNB_NCC_filter) );
+    if (d_final_matches_passing_BNB_SIFT_filter) cudacheck( cudaFree(d_final_matches_passing_BNB_SIFT_filter) );
+    if (d_final_count_passing_BNB_SIFT_filter) cudacheck( cudaFree(d_final_count_passing_BNB_SIFT_filter) );
+    if (d_sift_scores_passing_BNB_SIFT_filter) cudacheck( cudaFree(d_sift_scores_passing_BNB_SIFT_filter) );
 
     cudacheck(cudaEventDestroy(start));
     cudacheck(cudaEventDestroy(stop));
