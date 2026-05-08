@@ -17,6 +17,7 @@ if(ENABLE_CUDA)
         gpu_kernels/spatial_grid_mapping.cu
         gpu_kernels/epipolar_rasterization.cu
         gpu_kernels/precompute_left_edge_patches_photometry.cu
+        gpu_kernels/apply_NCC_on_the_fly.cu
     )
 endif()
 

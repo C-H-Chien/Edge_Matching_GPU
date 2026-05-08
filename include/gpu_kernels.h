@@ -42,6 +42,39 @@ struct Precomputed_Edge_Patches_Photometry {
     float vL_minus; //> standard deviation
 };
 
+inline CUDA_Texture_Wrapper create_CUDA_texture_object_for_img(float* h_img, int img_width, int img_height) 
+{
+    CUDA_Texture_Wrapper wrapper;
+
+    //> Define the channel format (1 channel, 32-bit float)
+    cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindFloat);
+
+    //> CUDA array allocated in the memory where the swizzled 2D memory lives
+    cudacheck( cudaMallocArray(&wrapper.array, &channelDesc, img_width, img_height) );
+
+    //> Copy linear host data to the swizzled CUDA array
+    size_t spitch = img_width * sizeof(float);
+    cudacheck( cudaMemcpy2DToArray(wrapper.array, 0, 0, h_img, spitch, img_width * sizeof(float), img_height, cudaMemcpyHostToDevice) );
+    
+    //> Specify the resource descriptor
+    cudaResourceDesc resDesc = {};
+    resDesc.resType = cudaResourceTypeArray;
+    resDesc.res.array.array = wrapper.array;
+
+    //> Specify the texture descriptor, namely, how the hardware reads it
+    cudaTextureDesc texDesc = {};
+    texDesc.addressMode[0] = cudaAddressModeClamp; // Clamp X to edge
+    texDesc.addressMode[1] = cudaAddressModeClamp; // Clamp Y to edge
+    texDesc.filterMode     = cudaFilterModeLinear; // Enable Hardware Bilinear Interpolation
+    texDesc.readMode       = cudaReadModeElementType;
+    texDesc.normalizedCoords = 0;               //> Absolute pixel coordinates are used rather than normalized coordinates
+
+    //> Create the texture object
+    cudacheck( cudaCreateTextureObject(&wrapper.texObj, &resDesc, &texDesc, nullptr) );
+
+    return wrapper;
+}
+
 //> Thrust + GPU kernel + sort pipeline for spatial grid mapping (defined in spatial_grid_mapping.cu)
 float edge_spatial_map_thrust_pipeline(
     int             device_id,
@@ -105,6 +138,26 @@ float precompute_left_edge_patches_photometry_pipeline(
     std::size_t     num_of_left_edges,
     cudaEvent_t     start,
     cudaEvent_t     stop
+);
+
+//> GPU kernel pipeline for apply NCC filter (defined in apply_NCC_on_the_fly.cu)
+float apply_NCC_filter_pipeline(
+    int                         device_id,
+    /* Data live in the host memory */
+    float*                      h_right_img,
+    /* Data live in the device memory */
+    const Match_by_Edge_Index*  d_candidate_matches,
+    const Edge_GPU*             d_left_edges,
+    const Edge_GPU*             d_right_edges,
+    Match_by_Edge_Index*        &d_final_matches_passing_NCC_filter,
+    int*                        &d_match_count_passing_NCC_filter,
+    Precomputed_Edge_Patches_Photometry* d_left_patches,
+    /* Others */
+    int                         right_img_width,
+    int                         right_img_height,
+    int                         num_candidates,
+    cudaEvent_t                 start,
+    cudaEvent_t                 stop
 );
 
 #endif // GPU_KERNELS_H

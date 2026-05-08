@@ -7,7 +7,7 @@
 #include "gpu_settings.h"
 
 //> Helper to extract a patch directly from texture into GPU thread-local registers
-__device__ void extract_patch_stats_on_the_fly(
+static __device__ __forceinline__ void extract_patch_stats_on_the_fly(
     cudaTextureObject_t imgTex,
     float shifted_cx, float shifted_cy, 
     float cos_t, float sin_t,

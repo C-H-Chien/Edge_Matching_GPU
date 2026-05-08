@@ -127,8 +127,10 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     cudacheck( cudaMalloc((void**)&d_cell_start_idx,        total_num_of_grid_cells * sizeof(int)) );
     cudacheck( cudaMalloc((void**)&d_num_of_edges_in_cell,  total_num_of_grid_cells * sizeof(int)) );
 
-    cudacheck( cudaMalloc((void**)&d_matches,     max_stereo_edge_matches_after_epipolar_rasterization * sizeof(Match_by_Edge_Index)) );
-    cudacheck( cudaMalloc((void**)&d_match_count, sizeof(int)) );
+    //> Output returned from the kernels processing EP, LP, and OR filters
+    //> These can be allocated first since there is no dependency on the preceding kernels
+    cudacheck( cudaMalloc((void**)&d_final_matches_passing_EP_LP_OR_filters,  max_stereo_edge_matches_after_epipolar_rasterization * sizeof(Match_by_Edge_Index)) );
+    cudacheck( cudaMalloc((void**)&d_match_count_passing_EP_LP_OR_filters, sizeof(int)) );
 
     //> cuda event
     cudacheck( cudaEventCreate(&start) );
@@ -154,6 +156,9 @@ void Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU() {
 
     //> Precompute the left edge patches photometry
     GPU_time_collection.time_precompute_left_edge_patches_photometry = precompute_left_edge_patches_photometry();
+
+    //> Apply NCC filter
+    GPU_time_collection.time_apply_NCC_filter = apply_NCC_filter();
 }
 
 float Stereo_Matches_GPU_Pipeline::build_edge_spatial_map() {
@@ -182,7 +187,7 @@ float Stereo_Matches_GPU_Pipeline::rasterize_epipolar_band_for_matches() {
         device_id,
         h_F,
         h_left_edges,
-        h_match_count,
+        h_match_count_passing_EP_LP_OR_filters,
         h_matches_out,
         d_left_edges,
         d_right_edges,
@@ -190,8 +195,8 @@ float Stereo_Matches_GPU_Pipeline::rasterize_epipolar_band_for_matches() {
         d_cell_start_idx,
         d_num_of_edges_in_cell,
         d_F,
-        d_matches,
-        d_match_count,
+        d_final_matches_passing_EP_LP_OR_filters,
+        d_match_count_passing_EP_LP_OR_filters,
         num_left_edges_,
         img_right_width,
         img_right_height,
@@ -203,6 +208,7 @@ float Stereo_Matches_GPU_Pipeline::rasterize_epipolar_band_for_matches() {
 }
 
 float Stereo_Matches_GPU_Pipeline::precompute_left_edge_patches_photometry() {
+
     return precompute_left_edge_patches_photometry_pipeline(
         device_id,
         h_left_img,
@@ -216,6 +222,30 @@ float Stereo_Matches_GPU_Pipeline::precompute_left_edge_patches_photometry() {
     );
 }
 
+float Stereo_Matches_GPU_Pipeline::apply_NCC_filter() {
+
+    //> Allocate intermediate device memory for final matches
+    cudacheck(cudaMalloc(&d_final_matches_passing_NCC_filter, h_match_count_passing_EP_LP_OR_filters * sizeof(Match_by_Edge_Index)));
+    cudacheck(cudaMalloc(&d_final_count_passing_NCC_filter, sizeof(int)));
+
+    std::cout << "Number of matches passing EP, LP, and OR filters: " << h_match_count_passing_EP_LP_OR_filters << std::endl;
+    return apply_NCC_filter_pipeline(
+        device_id,
+        h_right_img,
+        d_final_matches_passing_EP_LP_OR_filters,
+        d_left_edges,
+        d_right_edges,
+        d_final_matches_passing_NCC_filter,
+        d_final_count_passing_NCC_filter,
+        d_left_patches,
+        img_right_width,
+        img_right_height,
+        h_match_count_passing_EP_LP_OR_filters,
+        start,
+        stop
+    );
+}
+
 Stereo_Matches_GPU_Test_Context Stereo_Matches_GPU_Pipeline::make_test_context() const
 {
     Stereo_Matches_GPU_Test_Context ctx;
@@ -223,8 +253,8 @@ Stereo_Matches_GPU_Test_Context Stereo_Matches_GPU_Pipeline::make_test_context()
     ctx.h_right_edges = h_right_edges;
     ctx.h_cell_ids = h_cell_ids;
     ctx.h_F = h_F;
-    ctx.d_matches = d_matches;
-    ctx.d_match_count = d_match_count;
+    ctx.d_final_matches_passing_EP_LP_OR_filters = d_final_matches_passing_EP_LP_OR_filters;
+    ctx.d_match_count_passing_EP_LP_OR_filters = d_match_count_passing_EP_LP_OR_filters;
     ctx.d_edge_indices = d_edge_indices;
     ctx.num_left_edges = num_left_edges_;
     ctx.num_right_edges = num_right_edges_;
@@ -261,9 +291,11 @@ Stereo_Matches_GPU_Pipeline::~Stereo_Matches_GPU_Pipeline()
     cudacheck( cudaFree(d_edge_indices) );
     cudacheck( cudaFree(d_cell_start_idx) );
     cudacheck( cudaFree(d_num_of_edges_in_cell) );
-    cudacheck( cudaFree(d_matches) );
-    cudacheck( cudaFree(d_match_count) );
+    cudacheck( cudaFree(d_final_matches_passing_EP_LP_OR_filters) );
+    cudacheck( cudaFree(d_match_count_passing_EP_LP_OR_filters) );
     cudacheck( cudaFree(d_left_patches) );
+    cudacheck( cudaFree(d_final_matches_passing_NCC_filter) );
+    cudacheck( cudaFree(d_final_count_passing_NCC_filter) );
 
     cudacheck(cudaEventDestroy(start));
     cudacheck(cudaEventDestroy(stop));

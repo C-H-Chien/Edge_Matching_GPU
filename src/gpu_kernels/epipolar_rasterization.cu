@@ -218,8 +218,8 @@ float epipolar_rasterization_thick_band_pipeline(
 
     std::cout << "Time for epipolar rasterization: " << epipolar_rasterization_time << " milliseconds" << std::endl;
 
-    //> TEST: retrieve results
-    #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
+    // //> TEST: retrieve results
+    // #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
     h_match_count_out = 0;
     cudaMemcpy(&h_match_count_out, d_match_count, sizeof(int), cudaMemcpyDeviceToHost);
 
@@ -229,6 +229,8 @@ float epipolar_rasterization_thick_band_pipeline(
         h_match_count_out = max_matches;
     }
 
+    //> TEST: retrieve results
+    #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
     if (h_match_count_out > 0) {
         cudacheck(cudaMemcpy(h_matches_out, d_matches, h_match_count_out * sizeof(Match_by_Edge_Index),
                              cudaMemcpyDeviceToHost));

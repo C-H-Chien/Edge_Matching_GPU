@@ -70,39 +70,6 @@ void precompute_left_edge_patches_photometry_kernel_launcher(
     cudacheck(cudaLaunchKernel( reinterpret_cast<const void*>(precompute_left_edge_patches_photometry_kernel), grid_dim, block_dim, kernel_args, 0, nullptr) );
 }
 
-CUDA_Texture_Wrapper create_CUDA_texture_object_for_img(float* h_img, int img_width, int img_height) 
-{
-    CUDA_Texture_Wrapper wrapper;
-
-    //> Define the channel format (1 channel, 32-bit float)
-    cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindFloat);
-
-    //> CUDA array allocated in the memory where the swizzled 2D memory lives
-    cudacheck( cudaMallocArray(&wrapper.array, &channelDesc, img_width, img_height) );
-
-    //> Copy linear host data to the swizzled CUDA array
-    size_t spitch = img_width * sizeof(float);
-    cudacheck( cudaMemcpy2DToArray(wrapper.array, 0, 0, h_img, spitch, img_width * sizeof(float), img_height, cudaMemcpyHostToDevice) );
-    
-    //> Specify the resource descriptor
-    cudaResourceDesc resDesc = {};
-    resDesc.resType = cudaResourceTypeArray;
-    resDesc.res.array.array = wrapper.array;
-
-    //> Specify the texture descriptor, namely, how the hardware reads it
-    cudaTextureDesc texDesc = {};
-    texDesc.addressMode[0] = cudaAddressModeClamp; // Clamp X to edge
-    texDesc.addressMode[1] = cudaAddressModeClamp; // Clamp Y to edge
-    texDesc.filterMode     = cudaFilterModeLinear; // Enable Hardware Bilinear Interpolation
-    texDesc.readMode       = cudaReadModeElementType;
-    texDesc.normalizedCoords = 0;               //> Absolute pixel coordinates are used rather than normalized coordinates
-
-    //> Create the texture object
-    cudacheck( cudaCreateTextureObject(&wrapper.texObj, &resDesc, &texDesc, nullptr) );
-
-    return wrapper;
-}
-
 float precompute_left_edge_patches_photometry_pipeline(
     int             device_id,
     /* Data live in the host memory */

@@ -38,6 +38,7 @@ public:
     float build_edge_spatial_map();
     float rasterize_epipolar_band_for_matches();
     float precompute_left_edge_patches_photometry();
+    float apply_NCC_filter();
 
     int device_id;
     int img_left_height, img_right_height;
@@ -58,7 +59,7 @@ private:
     Edge_GPU* h_left_edges = nullptr;
     Edge_GPU* h_right_edges = nullptr;
     int* h_cell_ids = nullptr;
-    int h_match_count = 0;
+    int h_match_count_passing_EP_LP_OR_filters = 0;
     float* h_F = nullptr;
     Match_by_Edge_Index* h_matches_out = nullptr;
 
@@ -69,10 +70,12 @@ private:
     int* d_edge_indices = nullptr;
     int* d_cell_start_idx = nullptr;
     int* d_num_of_edges_in_cell = nullptr;
-    int* d_match_count = nullptr;
-    Match_by_Edge_Index* d_matches = nullptr;
+    int* d_match_count_passing_EP_LP_OR_filters = nullptr;
+    Match_by_Edge_Index* d_final_matches_passing_EP_LP_OR_filters = nullptr;
     float* d_F = nullptr;
     Precomputed_Edge_Patches_Photometry* d_left_patches;
+    int* d_final_count_passing_NCC_filter = nullptr;
+    Match_by_Edge_Index* d_final_matches_passing_NCC_filter = nullptr;
 
     int num_of_grid_cells_in_width;
     int num_of_grid_cells_in_height;

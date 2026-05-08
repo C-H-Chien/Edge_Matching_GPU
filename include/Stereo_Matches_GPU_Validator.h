@@ -14,8 +14,8 @@ struct Stereo_Matches_GPU_Test_Context {
     const int* h_cell_ids = nullptr;
     const float* h_F = nullptr;
 
-    const Match_by_Edge_Index* d_matches = nullptr;
-    const int* d_match_count = nullptr;
+    const Match_by_Edge_Index* d_final_matches_passing_EP_LP_OR_filters = nullptr;
+    const int* d_match_count_passing_EP_LP_OR_filters = nullptr;
     const int* d_edge_indices = nullptr;
 
     std::size_t num_left_edges = 0;

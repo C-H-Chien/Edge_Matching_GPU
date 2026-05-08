@@ -120,8 +120,8 @@ void Stereo_Matches_GPU_Validator::test_epipolar_rasterization(const Stereo_Matc
     }
 
     int raw_gpu_count = 0;
-    if (cudaMemcpy(&raw_gpu_count, ctx.d_match_count, sizeof(int), cudaMemcpyDeviceToHost) != cudaSuccess) {
-        LOG_ERROR("test_epipolar_rasterization: cudaMemcpy d_match_count failed");
+    if (cudaMemcpy(&raw_gpu_count, ctx.d_match_count_passing_EP_LP_OR_filters, sizeof(int), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        LOG_ERROR("test_epipolar_rasterization: cudaMemcpy d_match_count_passing_EP_LP_OR_filters failed");
         return;
     }
 
@@ -133,9 +133,9 @@ void Stereo_Matches_GPU_Validator::test_epipolar_rasterization(const Stereo_Matc
     const int gpu_n = std::min(raw_gpu_count, ctx.max_matches);
     std::vector<Match_by_Edge_Index> gpu_pairs(static_cast<size_t>(gpu_n));
     if (gpu_n > 0 &&
-        cudaMemcpy(gpu_pairs.data(), ctx.d_matches, static_cast<size_t>(gpu_n) * sizeof(Match_by_Edge_Index),
+        cudaMemcpy(gpu_pairs.data(), ctx.d_final_matches_passing_EP_LP_OR_filters, static_cast<size_t>(gpu_n) * sizeof(Match_by_Edge_Index),
                    cudaMemcpyDeviceToHost) != cudaSuccess) {
-        LOG_ERROR("test_epipolar_rasterization: cudaMemcpy d_matches failed");
+        LOG_ERROR("test_epipolar_rasterization: cudaMemcpy d_final_matches_passing_EP_LP_OR_filters failed");
         return;
     }
 
