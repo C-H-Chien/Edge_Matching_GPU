@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
+#include <cstring>
 #include <cuda_runtime.h>
 #include <cuda_runtime_api.h>
 
@@ -57,11 +58,21 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     h_cell_ids = new int[num_right_edges_];
     h_matches_out = new Match_by_Edge_Index[max_stereo_edge_matches_after_epipolar_rasterization];
 
-    //> flatten the images
+    //> Flatten images as float. StereoFrame images are loaded as CV_8U grayscale in Stereo_Iterator,
+    //> so direct memcpy into float* is invalid and can corrupt NCC photometry.
+    cv::Mat left_float;
+    cv::Mat right_float;
+    current_frame.left_image.convertTo(left_float, CV_32F);
+    current_frame.right_image.convertTo(right_float, CV_32F);
+    if (!left_float.isContinuous())
+        left_float = left_float.clone();
+    if (!right_float.isContinuous())
+        right_float = right_float.clone();
+
     h_left_img = new float[img_left_width * img_left_height];
     h_right_img = new float[img_right_width * img_right_height];
-    memcpy(h_left_img, current_frame.left_image.data, img_left_width * img_left_height * sizeof(float));
-    memcpy(h_right_img, current_frame.right_image.data, img_right_width * img_right_height * sizeof(float));
+    std::memcpy(h_left_img, left_float.ptr<float>(), static_cast<size_t>(img_left_width) * static_cast<size_t>(img_left_height) * sizeof(float));
+    std::memcpy(h_right_img, right_float.ptr<float>(), static_cast<size_t>(img_right_width) * static_cast<size_t>(img_right_height) * sizeof(float));
 
     //> Casting the edges to the proper format for GPU processing
     #pragma omp parallel for
