@@ -145,6 +145,7 @@ float apply_NCC_filter_pipeline(
     int                         device_id,
     /* Data live in the host memory */
     float*                      h_right_img,
+    int                         &h_NCC_match_count_out,
     /* Data live in the device memory */
     const Match_by_Edge_Index*  d_candidate_matches,
     const Edge_GPU*             d_left_edges,

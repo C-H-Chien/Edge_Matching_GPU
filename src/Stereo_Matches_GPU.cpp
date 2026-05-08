@@ -25,10 +25,18 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     ,img_left_width(mat_cols_prefer_undistorted(current_frame.left_image_undistorted, current_frame.left_image))
     ,img_right_width(mat_cols_prefer_undistorted(current_frame.right_image_undistorted, current_frame.right_image))
     ,dataset_(std::move(dataset))
+    , stereo_frame_ptr_(&current_frame)
 {
-    //> Fundamental matrix (left to right) is casted to float matrix
+    //> Fundamental matrix (left to right) is casted to float matrix.
+    //> Eigen stores Matrix3f column-major by default, but kernels index h_F as row-major:
+    //> [0..2] = first row, [3..5] = second row, [6..8] = third row.
     h_F_ = dataset_->get_fund_mat_21().cast<float>();
-    h_F = h_F_.data();
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            h_F_row_major_[r * 3 + c] = h_F_(r, c);
+        }
+    }
+    h_F = h_F_row_major_;
     num_left_edges_ = current_frame.left_edges.size();
     num_right_edges_ = current_frame.right_edges.size();
 
@@ -152,6 +160,7 @@ void Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU() {
     GPU_time_collection.time_epipolar_rasterization = rasterize_epipolar_band_for_matches();
     #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
     test_epipolar_rasterization();
+    test_EP_LP_OR_vs_stereo_matches_cpu();
     #endif
 
     //> Precompute the left edge patches photometry
@@ -159,6 +168,10 @@ void Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU() {
 
     //> Apply NCC filter
     GPU_time_collection.time_apply_NCC_filter = apply_NCC_filter();
+    std::cout << "Number of matches passing NCC filter: " << h_match_count_passing_NCC_filter << std::endl;
+    #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
+    test_ncc_filter();
+    #endif
 }
 
 float Stereo_Matches_GPU_Pipeline::build_edge_spatial_map() {
@@ -224,14 +237,32 @@ float Stereo_Matches_GPU_Pipeline::precompute_left_edge_patches_photometry() {
 
 float Stereo_Matches_GPU_Pipeline::apply_NCC_filter() {
 
-    //> Allocate intermediate device memory for final matches
-    cudacheck(cudaMalloc(&d_final_matches_passing_NCC_filter, h_match_count_passing_EP_LP_OR_filters * sizeof(Match_by_Edge_Index)));
+    //> Use device match count: host h_match_count_* must match d_match_count_* or the NCC kernel launches with
+    //> num_candidates == 0 while candidates still live on device (validator then sees CPU passes / GPU empty).
+    int num_candidates = 0;
+    cudacheck(cudaMemcpy(&num_candidates, d_match_count_passing_EP_LP_OR_filters, sizeof(int), cudaMemcpyDeviceToHost));
+    if (num_candidates > max_stereo_edge_matches_after_epipolar_rasterization) {
+        LOG_WARNING("NCC: clamping candidate count to epipolar buffer (" + std::to_string(num_candidates) + " -> " +
+                    std::to_string(max_stereo_edge_matches_after_epipolar_rasterization) + ")");
+        num_candidates = max_stereo_edge_matches_after_epipolar_rasterization;
+    }
+    if (num_candidates < 0) {
+        LOG_ERROR("NCC: invalid negative candidate count from device; treating as 0");
+        num_candidates = 0;
+    }
+    h_match_count_passing_EP_LP_OR_filters = num_candidates;
+
+    size_t ncc_out_bytes = static_cast<size_t>(num_candidates) * sizeof(Match_by_Edge_Index);
+    if (ncc_out_bytes == 0)
+        ncc_out_bytes = sizeof(Match_by_Edge_Index);
+    cudacheck(cudaMalloc(&d_final_matches_passing_NCC_filter, ncc_out_bytes));
     cudacheck(cudaMalloc(&d_final_count_passing_NCC_filter, sizeof(int)));
 
-    std::cout << "Number of matches passing EP, LP, and OR filters: " << h_match_count_passing_EP_LP_OR_filters << std::endl;
+    std::cout << "Number of matches passing EP, LP, and OR filters: " << num_candidates << std::endl;
     return apply_NCC_filter_pipeline(
         device_id,
         h_right_img,
+        h_match_count_passing_NCC_filter,
         d_final_matches_passing_EP_LP_OR_filters,
         d_left_edges,
         d_right_edges,
@@ -240,7 +271,7 @@ float Stereo_Matches_GPU_Pipeline::apply_NCC_filter() {
         d_left_patches,
         img_right_width,
         img_right_height,
-        h_match_count_passing_EP_LP_OR_filters,
+        num_candidates,
         start,
         stop
     );
@@ -255,7 +286,11 @@ Stereo_Matches_GPU_Test_Context Stereo_Matches_GPU_Pipeline::make_test_context()
     ctx.h_F = h_F;
     ctx.d_final_matches_passing_EP_LP_OR_filters = d_final_matches_passing_EP_LP_OR_filters;
     ctx.d_match_count_passing_EP_LP_OR_filters = d_match_count_passing_EP_LP_OR_filters;
+    ctx.d_final_matches_passing_NCC_filter = d_final_matches_passing_NCC_filter;
+    ctx.d_final_count_passing_NCC_filter = d_final_count_passing_NCC_filter;
+    ctx.d_left_patches = d_left_patches;
     ctx.d_edge_indices = d_edge_indices;
+    ctx.h_right_img = h_right_img;
     ctx.num_left_edges = num_left_edges_;
     ctx.num_right_edges = num_right_edges_;
     ctx.img_right_width = img_right_width;
@@ -263,6 +298,8 @@ Stereo_Matches_GPU_Test_Context Stereo_Matches_GPU_Pipeline::make_test_context()
     ctx.num_of_grid_cells_in_width = num_of_grid_cells_in_width;
     ctx.num_of_grid_cells_in_height = num_of_grid_cells_in_height;
     ctx.max_matches = max_stereo_edge_matches_after_epipolar_rasterization;
+    ctx.dataset = dataset_;
+    ctx.stereo_frame_for_cpu = stereo_frame_ptr_;
     return ctx;
 }
 
@@ -274,9 +311,17 @@ void Stereo_Matches_GPU_Pipeline::test_epipolar_rasterization() const {
     Stereo_Matches_GPU_Validator::test_epipolar_rasterization(make_test_context());
 }
 
+void Stereo_Matches_GPU_Pipeline::test_EP_LP_OR_vs_stereo_matches_cpu() const {
+    Stereo_Matches_GPU_Validator::test_EP_LP_OR_vs_stereo_matches_cpu(make_test_context());
+}
+
+void Stereo_Matches_GPU_Pipeline::test_ncc_filter() const {
+    Stereo_Matches_GPU_Validator::test_ncc_filter(make_test_context());
+}
+
 Stereo_Matches_GPU_Pipeline::~Stereo_Matches_GPU_Pipeline()
 {
-    //> Note that h_F aliases h_F_.data(), so Eigen frees that storage when h_F_ is destroyed. No need to delete[] h_F.
+    //> h_F aliases fixed storage h_F_row_major_; no need to free it.
     delete[] h_left_img;
     delete[] h_right_img;
     delete[] h_left_edges;

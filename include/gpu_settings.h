@@ -11,10 +11,12 @@
 #define GRID_CELL_SIZE (16)
 #define FACTOR_OF_NUM_OF_LEFT_EDGES_FOR_STEREO_EDGE_MATCHES_AFTER_EPIPOLAR_RASTERIZATION (100)
 
-//> Macros related to NCC filter
-#define PATCH_RADIUS                    ((PATCH_SIZE / 2) - 1)
+//> Macros related to NCC filter (must mirror Utility::get_patch_on_one_edge_side + get_Orthogonal_Shifted_Points)
+//> PATCH_RADIUS: half-width in pixels; CPU loops i,j in [-half..half] with half = floor(PATCH_SIZE/2) == PATCH_SIZE/2 for odd PATCH_SIZE
+#define PATCH_RADIUS                    (PATCH_SIZE / 2)
 #define TOTAL_NUM_OF_PATCH_PIXELS       (PATCH_SIZE * PATCH_SIZE)
-#define OFFSET_DIST                     ((PATCH_SIZE / 2) + 1)
+//> Orthogonal patch-center offset; CPU uses ORTHOGONAL_SHIFT_MAG in Utility::get_Orthogonal_Shifted_Points(edge)
+#define OFFSET_DIST                     (ORTHOGONAL_SHIFT_MAG)
 
 //> CUDA error check
 #define cudacheck( a )  do { \

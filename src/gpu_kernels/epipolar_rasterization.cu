@@ -75,9 +75,10 @@ __global__ void epipolar_rasterization_thick_band_kernel(
             
             //> Evaluate edges in the grid cells
             for (int cy = cy_start; cy <= cy_end; cy++) {
-                eval_edges_in_grid_cells(left_edge, cx, cy, num_of_grid_cells_in_width, left_edge_idx, a, b, c, 
-                                   d_right_edges, d_edge_indices, d_cell_start_idx, d_num_of_edges_in_cell, 
-                                   d_matches, d_match_count, max_matches);
+                eval_edges_in_grid_cells(left_edge, cx, cy, num_of_grid_cells_in_width, left_edge_idx, a, b, c,
+                                         x0, y0, x1, y1,
+                                         d_right_edges, d_edge_indices, d_cell_start_idx, d_num_of_edges_in_cell,
+                                         d_matches, d_match_count, max_matches);
             }
         }
     } 
@@ -111,9 +112,10 @@ __global__ void epipolar_rasterization_thick_band_kernel(
             
             //> Evaluate edges in the grid cells
             for (int cx = cx_start; cx <= cx_end; cx++) {
-                eval_edges_in_grid_cells(left_edge, cx, cy, num_of_grid_cells_in_width, left_edge_idx, a, b, c, 
-                                   d_right_edges, d_edge_indices, d_cell_start_idx, d_num_of_edges_in_cell, 
-                                   d_matches, d_match_count, max_matches);
+                eval_edges_in_grid_cells(left_edge, cx, cy, num_of_grid_cells_in_width, left_edge_idx, a, b, c,
+                                         x0, y0, x1, y1,
+                                         d_right_edges, d_edge_indices, d_cell_start_idx, d_num_of_edges_in_cell,
+                                         d_matches, d_match_count, max_matches);
             }
         }
     }
@@ -218,10 +220,9 @@ float epipolar_rasterization_thick_band_pipeline(
 
     std::cout << "Time for epipolar rasterization: " << epipolar_rasterization_time << " milliseconds" << std::endl;
 
-    // //> TEST: retrieve results
-    // #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
+    //> Copy match count to host for downstream stages (must stay in sync with d_match_count)
     h_match_count_out = 0;
-    cudaMemcpy(&h_match_count_out, d_match_count, sizeof(int), cudaMemcpyDeviceToHost);
+    cudacheck(cudaMemcpy(&h_match_count_out, d_match_count, sizeof(int), cudaMemcpyDeviceToHost));
 
     //> Clamp count just in case it exceeded the buffer size
     if (h_match_count_out > max_matches) {

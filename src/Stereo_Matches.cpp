@@ -1,8 +1,110 @@
 #include "Stereo_Matches.h"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <unordered_map>
 #include <sstream>
+
+namespace {
+
+int stereo_frame_right_width(const StereoFrame &frame)
+{
+    return frame.right_image_undistorted.empty() ? frame.right_image.cols : frame.right_image_undistorted.cols;
+}
+
+int stereo_frame_right_height(const StereoFrame &frame)
+{
+    return frame.right_image_undistorted.empty() ? frame.right_image.rows : frame.right_image_undistorted.rows;
+}
+
+/** Mirrors gpu_helpers/get_epipolar_line_end_points.cuh (float, same boundary tests). */
+bool epipolar_segment_endpoints_float(float a, float b, float c, int W, int H, float &x0, float &y0, float &x1, float &y1)
+{
+    struct Pt {
+        float x;
+        float y;
+    };
+    Pt ips[2];
+    int count = 0;
+
+    if (std::fabs(b) > 1e-6f) {
+        float y_left = -c / b;
+        if (y_left >= 0.f && y_left <= static_cast<float>(H))
+            ips[count++] = {0.f, y_left};
+
+        float y_right = -(a * static_cast<float>(W) + c) / b;
+        if (y_right >= 0.f && y_right <= static_cast<float>(H) && count < 2)
+            ips[count++] = {static_cast<float>(W), y_right};
+    }
+    if (std::fabs(a) > 1e-6f && count < 2) {
+        float x_top = -c / a;
+        if (x_top >= 0.f && x_top <= static_cast<float>(W))
+            ips[count++] = {x_top, 0.f};
+        if (count < 2) {
+            float x_bottom = -(b * static_cast<float>(H) + c) / a;
+            if (x_bottom >= 0.f && x_bottom <= static_cast<float>(W))
+                ips[count++] = {x_bottom, static_cast<float>(H)};
+        }
+    }
+    if (count != 2)
+        return false;
+    x0 = ips[0].x;
+    y0 = ips[0].y;
+    x1 = ips[1].x;
+    y1 = ips[1].y;
+    return true;
+}
+
+bool edge_pair_orientation_ok_float(float ori_left, float ori_right, float tol_deg)
+{
+    float diff_rad = std::fabs(ori_left - ori_right);
+    float diff_deg = diff_rad * (180.f / static_cast<float>(M_PI));
+    if (diff_deg > 180.f)
+        diff_deg = 360.f - diff_deg;
+    if (diff_deg < tol_deg)
+        return true;
+    if (std::fabs(diff_deg - 180.f) < tol_deg)
+        return true;
+    return false;
+}
+
+/** Same predicates as eval_edges_in_grid_cells.cuh using float32 F and coordinates (host cross-check vs CUDA). */
+bool pair_matches_gpu_epipolar_geometry_f(const Eigen::Matrix3f &F, float lx, float ly, float rx, float ry, float ori_L,
+                                          float ori_R, int img_W, int img_H)
+{
+    if (lx < rx)
+        return false;
+    float a_raw = F(0, 0) * lx + F(0, 1) * ly + F(0, 2);
+    float b_raw = F(1, 0) * lx + F(1, 1) * ly + F(1, 2);
+    float c_raw = F(2, 0) * lx + F(2, 1) * ly + F(2, 2);
+    float norm = std::sqrt(a_raw * a_raw + b_raw * b_raw);
+    if (norm < 1e-6f)
+        return false;
+    float a = a_raw / norm;
+    float b = b_raw / norm;
+    float c = c_raw / norm;
+    float seg_x0 = 0.f, seg_y0 = 0.f, seg_x1 = 0.f, seg_y1 = 0.f;
+    if (!epipolar_segment_endpoints_float(a, b, c, img_W, img_H, seg_x0, seg_y0, seg_x1, seg_y1))
+        return false;
+    float dist = std::fabs(a * rx + b * ry + c);
+    if (!(dist < static_cast<float>(EPIPOLAR_LINE_DIST_THRESH)))
+        return false;
+    float vx = seg_x1 - seg_x0;
+    float vy = seg_y1 - seg_y0;
+    float v2 = vx * vx + vy * vy;
+    if (v2 < 1e-6f)
+        return false;
+    float t = ((rx - seg_x0) * vx + (ry - seg_y0) * vy) / v2;
+    if (t < 0.f || t > 1.f)
+        return false;
+    float disparity_sq = (lx - rx) * (lx - rx) + (ly - ry) * (ly - ry);
+    const float md = static_cast<float>(MAX_DISPARITY);
+    if (!(disparity_sq < md * md))
+        return false;
+    return edge_pair_orientation_ok_float(ori_L, ori_R, static_cast<float>(EDGE_PAIR_ORIENTATION_PREFILTER_DEG));
+}
+
+} // namespace
 
 // /*
 //     calculate the epipolar line for each edge point using the fundamental matrix.
@@ -416,6 +518,52 @@ void Stereo_Matches::apply_Epipolar_Line_Distance_Filtering(
             stereo_frame_edge_pairs.matching_edge_clusters[i].edge_clusters = right_candidate_edge_clusters;
         }
     }
+}
+
+void Stereo_Matches::collect_candidate_pairs_after_EP_LP_OR(
+    Dataset::Ptr dataset, const StereoFrame &frame, std::vector<std::pair<int, int>> &out_left_right_indices)
+{
+    out_left_right_indices.clear();
+    if (frame.left_edges.empty())
+        return;
+
+    Stereo_Edge_Pairs sep(&frame);
+    sep.focused_edge_indices.reserve(frame.left_edges.size());
+    for (size_t i = 0; i < frame.left_edges.size(); ++i)
+        sep.focused_edge_indices.push_back(static_cast<int>(i));
+    sep.matching_edge_clusters.resize(sep.focused_edge_indices.size());
+    sep.veridical_right_edges_indices.assign(sep.focused_edge_indices.size(), std::vector<int>());
+
+    apply_Epipolar_Line_Distance_Filtering(sep, dataset, frame.right_edges, "", true, 0, 0);
+    apply_Disparity_Filtering(sep, "", 0);
+    apply_orientation_filter(sep, EDGE_PAIR_ORIENTATION_PREFILTER_DEG, "", 0);
+
+    for (size_t i = 0; i < sep.focused_edge_indices.size(); ++i) {
+        const int left_idx = sep.focused_edge_indices[static_cast<int>(i)];
+        for (const auto &cl : sep.matching_edge_clusters[i].edge_clusters) {
+            if (cl.contributing_edges_toed_indices.empty())
+                continue;
+            out_left_right_indices.push_back({left_idx, cl.contributing_edges_toed_indices[0]});
+        }
+    }
+
+    //> CPU epipolar pass uses distance to the *infinite* line; GPU keeps only pairs whose right point projects onto the
+    //> finite segment inside the right image with t∈[0,1]. Prune with float32 F and coords/predicates like eval_edges_in_grid_cells.cuh.
+    const Eigen::Matrix3f Ff = dataset->get_fund_mat_21().cast<float>();
+    const int Wr = stereo_frame_right_width(frame);
+    const int Hr = stereo_frame_right_height(frame);
+    std::vector<std::pair<int, int>> gpu_geom;
+    gpu_geom.reserve(out_left_right_indices.size());
+    for (const auto &pr : out_left_right_indices) {
+        const Edge &Ledge = frame.left_edges[static_cast<size_t>(pr.first)];
+        const Edge &Redge = frame.right_edges[static_cast<size_t>(pr.second)];
+        if (pair_matches_gpu_epipolar_geometry_f(
+                Ff, static_cast<float>(Ledge.location.x), static_cast<float>(Ledge.location.y),
+                static_cast<float>(Redge.location.x), static_cast<float>(Redge.location.y),
+                static_cast<float>(Ledge.orientation), static_cast<float>(Redge.orientation), Wr, Hr))
+            gpu_geom.push_back(pr);
+    }
+    out_left_right_indices = std::move(gpu_geom);
 }
 
 void Stereo_Matches::record_Filter_Distribution(const std::string &filter_name, const std::vector<double> &filter_values, const std::vector<int> &is_veridical, const std::string &output_dir, size_t frame_idx)
@@ -1392,7 +1540,7 @@ Frame_Evaluation_Metrics Stereo_Matches::get_Stereo_Edge_Pairs(Dataset::Ptr data
     }
 
     // start_time = std::chrono::high_resolution_clock::now();
-    apply_orientation_filter(stereo_frame_edge_pairs, 10.0, "output_files", frame_idx);
+    apply_orientation_filter(stereo_frame_edge_pairs, EDGE_PAIR_ORIENTATION_PREFILTER_DEG, "output_files", frame_idx);
     // end_time = std::chrono::high_resolution_clock::now();
     // timing_statistics.time_OR = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
     if (dataset->has_gt()) {

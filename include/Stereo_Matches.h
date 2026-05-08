@@ -67,6 +67,11 @@ public:
     void apply_bidirectional_test(Stereo_Edge_Pairs &left_frame, Stereo_Edge_Pairs &right_frame, const std::string &output_dir, int frame_idx);
     void apply_orientation_filter(Stereo_Edge_Pairs &stereo_frame_edge_pairs, double orientation_threshold, const std::string &output_dir, size_t frame_idx);
 
+    /** EP + LP (disparity) + OR like get_Stereo_Edge_Pairs before SIFT/NCC, then prune to GPU-equivalent geometry:
+     *  left_x ≥ right_x, perpendicular distance along the finite right-image epipolar segment (t ∈ [0, 1]),
+     *  and disparity ≤ MAX_DISPARITY. Indices are positions in frame.left_edges / frame.right_edges. */
+    void collect_candidate_pairs_after_EP_LP_OR(Dataset::Ptr dataset, const StereoFrame &frame, std::vector<std::pair<int, int>> &out_left_right_indices);
+
     void refine_edge_disparity(Stereo_Edge_Pairs &stereo_frame_edge_pairs, size_t frame_idx, bool is_left);
     void consolidate_redundant_edge_hypothesis(Stereo_Edge_Pairs &stereo_frame_edge_pairs, size_t frame_idx, bool b_do_epipolar_shift = true, bool b_do_clustering = true);
     void min_Edge_Photometric_Residual_by_Gauss_Newton(

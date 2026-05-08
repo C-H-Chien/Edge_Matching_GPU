@@ -64,8 +64,8 @@ __global__ void apply_NCC_filter_kernel(
     //> Take the maximum of the four possible combinations
     float max_ncc = fmaxf(fmaxf(sim_pp, sim_pn), fmaxf(sim_np, sim_nn));
 
-    //> If pass the filter, add the candidate match to the final matches
-    if (max_ncc >= NCC_THRESH) {
+    //> Mirror Stereo_Matches::apply_NCC_Filtering: `if (final_SIM_score > NCC_THRESH)`
+    if (max_ncc > static_cast<float>(NCC_THRESH)) {
         int out_idx = atomicAdd(d_final_count, 1);
         d_final_matches[out_idx] = candidate;
     }
@@ -111,6 +111,7 @@ float apply_NCC_filter_pipeline(
     int                         device_id,
     /* Data live in the host memory */
     float*                      h_right_img,
+    int                         &h_NCC_match_count_out,
     /* Data live in the device memory */
     const Match_by_Edge_Index*  d_candidate_matches,
     const Edge_GPU*             d_left_edges,
@@ -126,6 +127,9 @@ float apply_NCC_filter_pipeline(
     cudaEvent_t                 stop)
 {
     cudacheck(cudaSetDevice(device_id));
+
+    //> atomicAdd target must be zero-initialized before the kernel launch
+    cudacheck(cudaMemset(d_match_count_passing_NCC_filter, 0, sizeof(int)));
 
     //> Create Textures by copying the host images (right image) to the GPU texture cache
     CUDA_Texture_Wrapper right_texture_wrap = create_CUDA_texture_object_for_img(h_right_img, right_img_width, right_img_height);
@@ -146,6 +150,10 @@ float apply_NCC_filter_pipeline(
     cudacheck(cudaEventElapsedTime(&apply_NCC_filter_time, start, stop));
 
     std::cout << "Time for applying NCC filter: " << apply_NCC_filter_time << " milliseconds" << std::endl;
+
+    //> Copy match count to host for downstream stages (must stay in sync with d_match_count)
+    h_NCC_match_count_out = 0;
+    cudacheck(cudaMemcpy(&h_NCC_match_count_out, d_match_count_passing_NCC_filter, sizeof(int), cudaMemcpyDeviceToHost));
 
     //> Destroy the texture. This does not destroy the underlying array, so the allocated patches are kept alive.
     cudacheck( cudaDestroyTextureObject(right_texture_wrap.texObj) );

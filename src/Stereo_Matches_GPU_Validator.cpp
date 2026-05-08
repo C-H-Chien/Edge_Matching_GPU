@@ -7,6 +7,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "Stereo_Matches.h"
+
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -59,6 +61,83 @@ bool epipolar_line_endpoints(float a, float b, float c, int W, int H, float& x0,
     x1 = ips[1].x;
     y1 = ips[1].y;
     return true;
+}
+
+float sample_img_bilinear_clamped(const float* img, int W, int H, float x, float y)
+{
+    if (W <= 0 || H <= 0 || img == nullptr)
+        return 0.f;
+    // Match cudaTextureObject + tex2D<float> with unnormalized coordinates and linear filtering:
+    // texture coordinates are defined at texel centers (0.5, 0.5), so emulate that half-texel shift.
+    x = x - 0.5f;
+    y = y - 0.5f;
+    x = std::max(0.f, std::min(x, static_cast<float>(W - 1)));
+    y = std::max(0.f, std::min(y, static_cast<float>(H - 1)));
+    const int x0 = static_cast<int>(std::floor(x));
+    const int y0 = static_cast<int>(std::floor(y));
+    const int x1 = std::min(x0 + 1, W - 1);
+    const int y1 = std::min(y0 + 1, H - 1);
+    const float tx = x - static_cast<float>(x0);
+    const float ty = y - static_cast<float>(y0);
+    const float v00 = img[y0 * W + x0];
+    const float v10 = img[y0 * W + x1];
+    const float v01 = img[y1 * W + x0];
+    const float v11 = img[y1 * W + x1];
+    const float a = v00 + (v10 - v00) * tx;
+    const float b = v01 + (v11 - v01) * tx;
+    return a + (b - a) * ty;
+}
+
+void extract_patch_stats_cpu(const float* img, int W, int H, float shifted_cx, float shifted_cy, float cos_t, float sin_t,
+                             float* patch_data, float& mean, float& variance)
+{
+    float sum = 0.f;
+    float sum_sq = 0.f;
+    int count = 0;
+    for (int v = -PATCH_RADIUS; v <= PATCH_RADIUS; ++v) {
+        for (int u = -PATCH_RADIUS; u <= PATCH_RADIUS; ++u) {
+            const float sx = shifted_cx + static_cast<float>(u) * cos_t - static_cast<float>(v) * sin_t;
+            const float sy = shifted_cy + static_cast<float>(u) * sin_t + static_cast<float>(v) * cos_t;
+            const float val = sample_img_bilinear_clamped(img, W, H, sx, sy);
+            patch_data[count++] = val;
+            sum += val;
+            sum_sq += val * val;
+        }
+    }
+    const float total = static_cast<float>(TOTAL_NUM_OF_PATCH_PIXELS);
+    mean = sum / total;
+    variance = (sum_sq / total) - (mean * mean);
+    if (variance < 1e-5f)
+        variance = 1e-5f;
+}
+
+float compute_ncc_cpu(const float* p1, float m1, float v1, const float* p2, float m2, float v2)
+{
+    float cross_cov = 0.f;
+    for (int i = 0; i < TOTAL_NUM_OF_PATCH_PIXELS; ++i)
+        cross_cov += (p1[i] - m1) * (p2[i] - m2);
+    cross_cov /= static_cast<float>(TOTAL_NUM_OF_PATCH_PIXELS);
+    return cross_cov / std::sqrt(std::max(v1 * v2, 1e-10f));
+}
+
+unsigned long long pair_key(int left_idx, int right_idx)
+{
+    return (static_cast<unsigned long long>(static_cast<unsigned int>(left_idx)) << 32) |
+           static_cast<unsigned int>(right_idx);
+}
+
+// Mirrors edge_pair_passes_orientation_prefilter_deg on device (Stereo_Matches::apply_orientation_filter).
+bool cpu_edge_pair_orientation_ok(float ori_left, float ori_right, double tol_deg)
+{
+    double diff_deg =
+        std::fabs(static_cast<double>(ori_left) - static_cast<double>(ori_right)) * (180.0 / M_PI);
+    if (diff_deg > 180.0)
+        diff_deg = 360.0 - diff_deg;
+    if (diff_deg < tol_deg)
+        return true;
+    if (std::fabs(diff_deg - 180.0) < tol_deg)
+        return true;
+    return false;
 }
 
 } // namespace
@@ -187,7 +266,10 @@ void Stereo_Matches_GPU_Validator::test_epipolar_rasterization(const Stereo_Matc
             const float t = ((rx - x0) * vx + (ry - y0) * vy) / v2;
             if (t < 0.f || t > 1.f)
                 continue;
-            if (dist < static_cast<float>(EPIPOLAR_LINE_DIST_THRESH) && disparity_sq < max_disp_sq)
+            if (dist < static_cast<float>(EPIPOLAR_LINE_DIST_THRESH) && disparity_sq < max_disp_sq &&
+                cpu_edge_pair_orientation_ok(ctx.h_left_edges[static_cast<size_t>(li)].orientation,
+                                            ctx.h_right_edges[rj].orientation,
+                                            EDGE_PAIR_ORIENTATION_PREFILTER_DEG))
                 bucket.push_back(Match_by_Edge_Index{li, static_cast<int>(rj)});
         }
     }
@@ -263,7 +345,10 @@ void Stereo_Matches_GPU_Validator::test_epipolar_rasterization(const Stereo_Matc
         const float dist = std::fabs(a * rx + b * ry + c);
         const float t = ((rx - x0) * vx + (ry - y0) * vy) / v2;
         if (!(dist < static_cast<float>(EPIPOLAR_LINE_DIST_THRESH) && disparity_sq < max_disp_sq &&
-              t >= 0.f && t <= 1.f))
+              t >= 0.f && t <= 1.f &&
+              cpu_edge_pair_orientation_ok(ctx.h_left_edges[p.left_edge_idx].orientation,
+                                           ctx.h_right_edges[p.right_edge_idx].orientation,
+                                           EDGE_PAIR_ORIENTATION_PREFILTER_DEG)))
             ++gpu_invalid_by_filter;
     }
 
@@ -300,6 +385,279 @@ void Stereo_Matches_GPU_Validator::test_epipolar_rasterization(const Stereo_Matc
                     " (missing=" + std::to_string(cpu_not_in_gpu) +
                     ", gpu_unique=" + std::to_string(gpu_unique.size()) +
                     ", cpu_unique=" + std::to_string(cpu_unique.size()) +
+                    ", recall=" + std::to_string(recall) +
+                    ", duplicates=" + std::to_string(gpu_duplicates) + ")");
+    }
+}
+
+void Stereo_Matches_GPU_Validator::test_EP_LP_OR_vs_stereo_matches_cpu(const Stereo_Matches_GPU_Test_Context& ctx)
+{
+    if (ctx.dataset == nullptr || ctx.stereo_frame_for_cpu == nullptr) {
+        LOG_TEST("test_EP_LP_OR_vs_stereo_matches_cpu: skip (dataset or stereo_frame not set)");
+        return;
+    }
+    if (ctx.d_match_count_passing_EP_LP_OR_filters == nullptr || ctx.d_final_matches_passing_EP_LP_OR_filters == nullptr) {
+        LOG_WARNING("test_EP_LP_OR_vs_stereo_matches_cpu: skip (missing device epipolar pointers)");
+        return;
+    }
+
+    const StereoFrame& frame = *ctx.stereo_frame_for_cpu;
+    Stereo_Matches sm;
+    std::vector<std::pair<int, int>> cpu_lr;
+    sm.collect_candidate_pairs_after_EP_LP_OR(ctx.dataset, frame, cpu_lr);
+
+    int raw_gpu_count = 0;
+    if (cudaMemcpy(&raw_gpu_count, ctx.d_match_count_passing_EP_LP_OR_filters, sizeof(int), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        LOG_ERROR("test_EP_LP_OR_vs_stereo_matches_cpu: cudaMemcpy d_match_count failed");
+        return;
+    }
+    if (raw_gpu_count > ctx.max_matches) {
+        LOG_WARNING("Stereo_Matches cross-check: raw GPU epipolar count " + std::to_string(raw_gpu_count) +
+                    " exceeds buffer " + std::to_string(ctx.max_matches) +
+                    "; comparison uses truncated prefix only");
+    }
+    const int gpu_n = std::min(raw_gpu_count, ctx.max_matches);
+    std::vector<Match_by_Edge_Index> gpu_pairs(static_cast<size_t>(gpu_n));
+    if (gpu_n > 0 &&
+        cudaMemcpy(gpu_pairs.data(), ctx.d_final_matches_passing_EP_LP_OR_filters,
+                   static_cast<size_t>(gpu_n) * sizeof(Match_by_Edge_Index), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        LOG_ERROR("test_EP_LP_OR_vs_stereo_matches_cpu: cudaMemcpy d_final_matches EP failed");
+        return;
+    }
+
+    std::vector<unsigned long long> cpu_keys;
+    cpu_keys.reserve(cpu_lr.size());
+    for (const auto& pr : cpu_lr)
+        cpu_keys.push_back(pair_key(pr.first, pr.second));
+    std::vector<unsigned long long> gpu_keys;
+    gpu_keys.reserve(gpu_pairs.size());
+    for (const auto& p : gpu_pairs)
+        gpu_keys.push_back(pair_key(p.left_edge_idx, p.right_edge_idx));
+
+    std::sort(cpu_keys.begin(), cpu_keys.end());
+    std::sort(gpu_keys.begin(), gpu_keys.end());
+
+    if (cpu_keys == gpu_keys) {
+        LOG_TEST("EP_LP_OR: GPU multiset equals finite-segment–pruned Stereo_Matches EP+LP+OR (" +
+                 std::to_string(cpu_keys.size()) + " pairs)");
+        return;
+    }
+
+    LOG_ERROR("EP_LP_OR: GPU multiset differs from finite-segment–pruned Stereo_Matches reference (gpu_sorted=" +
+              std::to_string(gpu_keys.size()) + ", cpu_sorted=" + std::to_string(cpu_keys.size()) +
+              ", raw_gpu_count=" + std::to_string(raw_gpu_count) +
+              ") — check float F on GPU vs double F on host, or right image W/H alignment with Stereo_Matches_GPU_Pipeline");
+
+    auto unpack = [](unsigned long long k) {
+        const int lj = static_cast<int>(static_cast<unsigned int>(k >> 32));
+        const int rj = static_cast<int>(static_cast<unsigned int>(k & 0xffffffffu));
+        return std::string("(") + std::to_string(lj) + "," + std::to_string(rj) + ")";
+    };
+    size_t i = 0;
+    while (i < cpu_keys.size() && i < gpu_keys.size() && cpu_keys[i] == gpu_keys[i])
+        ++i;
+    if (i < cpu_keys.size() && i < gpu_keys.size())
+        std::cerr << "[TEST] EP_LP_OR first_sorted_diff cpu " << unpack(cpu_keys[i]) << " gpu "
+                  << unpack(gpu_keys[i]) << std::endl;
+    else if (i < cpu_keys.size())
+        std::cerr << "[TEST] EP_LP_OR extra CPU-only (sorted) begins at " << unpack(cpu_keys[i]) << std::endl;
+    else if (i < gpu_keys.size())
+        std::cerr << "[TEST] EP_LP_OR extra GPU-only (sorted) begins at " << unpack(gpu_keys[i]) << std::endl;
+}
+
+void Stereo_Matches_GPU_Validator::test_ncc_filter(const Stereo_Matches_GPU_Test_Context& ctx)
+{
+    if (ctx.d_match_count_passing_EP_LP_OR_filters == nullptr ||
+        ctx.d_final_count_passing_NCC_filter == nullptr ||
+        ctx.d_final_matches_passing_EP_LP_OR_filters == nullptr ||
+        ctx.d_final_matches_passing_NCC_filter == nullptr ||
+        ctx.d_left_patches == nullptr ||
+        ctx.h_right_img == nullptr) {
+        LOG_WARNING("test_ncc_filter: skip (missing NCC test pointers)");
+        return;
+    }
+    if (ctx.num_left_edges == 0 || ctx.num_right_edges == 0) {
+        LOG_TEST("test_ncc_filter: skip (no edges)");
+        return;
+    }
+
+    int candidate_count = 0;
+    if (cudaMemcpy(&candidate_count, ctx.d_match_count_passing_EP_LP_OR_filters, sizeof(int), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        LOG_ERROR("test_ncc_filter: cudaMemcpy d_match_count_passing_EP_LP_OR_filters failed");
+        return;
+    }
+    int ncc_count = 0;
+    if (cudaMemcpy(&ncc_count, ctx.d_final_count_passing_NCC_filter, sizeof(int), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        LOG_ERROR("test_ncc_filter: cudaMemcpy d_final_count_passing_NCC_filter failed");
+        return;
+    }
+    if (candidate_count < 0 || ncc_count < 0) {
+        LOG_ERROR("test_ncc_filter: negative candidate/final count returned from GPU");
+        return;
+    }
+    if (ncc_count > candidate_count) {
+        LOG_ERROR("ncc_filter: GPU final match count exceeds candidate count"
+                  " (final=" + std::to_string(ncc_count) +
+                  ", candidate=" + std::to_string(candidate_count) + ")");
+        return;
+    }
+
+    std::vector<Match_by_Edge_Index> candidates(static_cast<size_t>(candidate_count));
+    if (candidate_count > 0 &&
+        cudaMemcpy(candidates.data(), ctx.d_final_matches_passing_EP_LP_OR_filters,
+                   static_cast<size_t>(candidate_count) * sizeof(Match_by_Edge_Index), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        LOG_ERROR("test_ncc_filter: cudaMemcpy d_final_matches_passing_EP_LP_OR_filters failed");
+        return;
+    }
+    std::vector<Match_by_Edge_Index> ncc_matches(static_cast<size_t>(ncc_count));
+    if (ncc_count > 0 &&
+        cudaMemcpy(ncc_matches.data(), ctx.d_final_matches_passing_NCC_filter,
+                   static_cast<size_t>(ncc_count) * sizeof(Match_by_Edge_Index), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        LOG_ERROR("test_ncc_filter: cudaMemcpy d_final_matches_passing_NCC_filter failed");
+        return;
+    }
+    std::vector<Precomputed_Edge_Patches_Photometry> left_patches(ctx.num_left_edges);
+    if (cudaMemcpy(left_patches.data(), ctx.d_left_patches,
+                   ctx.num_left_edges * sizeof(Precomputed_Edge_Patches_Photometry), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        LOG_ERROR("test_ncc_filter: cudaMemcpy d_left_patches failed");
+        return;
+    }
+
+    std::unordered_set<unsigned long long> candidate_set;
+    candidate_set.reserve(candidates.size());
+    for (const auto& p : candidates)
+        candidate_set.insert(pair_key(p.left_edge_idx, p.right_edge_idx));
+
+    std::unordered_set<unsigned long long> gpu_final_set;
+    gpu_final_set.reserve(ncc_matches.size());
+    size_t gpu_duplicates = 0;
+    size_t gpu_not_in_candidates = 0;
+    size_t gpu_invalid_idx = 0;
+    size_t gpu_below_threshold = 0;
+
+    // Must match apply_NCC_filter_kernel and Stereo_Matches::apply_NCC_Filtering:
+    // `if (final_SIM_score > NCC_THRESH)`
+    const float ncc_thresh_f = static_cast<float>(NCC_THRESH);
+    // Tiny tolerance only for float noise when sanity-checking rows the GPU claimed to pass:
+    const float gpu_row_tol = 1e-4f;
+
+    for (const auto& p : ncc_matches) {
+        const auto key = pair_key(p.left_edge_idx, p.right_edge_idx);
+        if (!gpu_final_set.insert(key).second)
+            ++gpu_duplicates;
+        if (!candidate_set.count(key))
+            ++gpu_not_in_candidates;
+        if (p.left_edge_idx < 0 || p.left_edge_idx >= static_cast<int>(ctx.num_left_edges) ||
+            p.right_edge_idx < 0 || p.right_edge_idx >= static_cast<int>(ctx.num_right_edges)) {
+            ++gpu_invalid_idx;
+            continue;
+        }
+
+        const auto& right_edge = ctx.h_right_edges[p.right_edge_idx];
+        const auto& left_patch = left_patches[static_cast<size_t>(p.left_edge_idx)];
+        const float cos_R = std::cos(right_edge.orientation);
+        const float sin_R = std::sin(right_edge.orientation);
+        const float nx_R = -sin_R * OFFSET_DIST;
+        const float ny_R = cos_R * OFFSET_DIST;
+
+        float pR_plus[TOTAL_NUM_OF_PATCH_PIXELS];
+        float pR_minus[TOTAL_NUM_OF_PATCH_PIXELS];
+        float mR_plus = 0.f, vR_plus = 0.f, mR_minus = 0.f, vR_minus = 0.f;
+        extract_patch_stats_cpu(ctx.h_right_img, ctx.img_right_width, ctx.img_right_height,
+                                right_edge.location_x + nx_R, right_edge.location_y + ny_R,
+                                cos_R, sin_R, pR_plus, mR_plus, vR_plus);
+        extract_patch_stats_cpu(ctx.h_right_img, ctx.img_right_width, ctx.img_right_height,
+                                right_edge.location_x - nx_R, right_edge.location_y - ny_R,
+                                cos_R, sin_R, pR_minus, mR_minus, vR_minus);
+
+        const float sim_pp = compute_ncc_cpu(left_patch.pL_plus, left_patch.mL_plus, left_patch.vL_plus, pR_plus, mR_plus, vR_plus);
+        const float sim_pn = compute_ncc_cpu(left_patch.pL_plus, left_patch.mL_plus, left_patch.vL_plus, pR_minus, mR_minus, vR_minus);
+        const float sim_np = compute_ncc_cpu(left_patch.pL_minus, left_patch.mL_minus, left_patch.vL_minus, pR_plus, mR_plus, vR_plus);
+        const float sim_nn = compute_ncc_cpu(left_patch.pL_minus, left_patch.mL_minus, left_patch.vL_minus, pR_minus, mR_minus, vR_minus);
+        const float max_ncc = std::max(std::max(sim_pp, sim_pn), std::max(sim_np, sim_nn));
+        // Host recompute must still clear the CPU/GPU hurdle (> NCC_THRESH), allow tiny FP slack below.
+        if (!(max_ncc > ncc_thresh_f - gpu_row_tol))
+            ++gpu_below_threshold;
+    }
+
+    std::unordered_set<unsigned long long> cpu_pass_set;
+    cpu_pass_set.reserve(candidates.size());
+    size_t cpu_lenient_borderline = 0;
+    for (const auto& p : candidates) {
+        if (p.left_edge_idx < 0 || p.left_edge_idx >= static_cast<int>(ctx.num_left_edges) ||
+            p.right_edge_idx < 0 || p.right_edge_idx >= static_cast<int>(ctx.num_right_edges)) {
+            continue;
+        }
+        const auto& right_edge = ctx.h_right_edges[p.right_edge_idx];
+        const auto& left_patch = left_patches[static_cast<size_t>(p.left_edge_idx)];
+        const float cos_R = std::cos(right_edge.orientation);
+        const float sin_R = std::sin(right_edge.orientation);
+        const float nx_R = -sin_R * OFFSET_DIST;
+        const float ny_R = cos_R * OFFSET_DIST;
+
+        float pR_plus[TOTAL_NUM_OF_PATCH_PIXELS];
+        float pR_minus[TOTAL_NUM_OF_PATCH_PIXELS];
+        float mR_plus = 0.f, vR_plus = 0.f, mR_minus = 0.f, vR_minus = 0.f;
+        extract_patch_stats_cpu(ctx.h_right_img, ctx.img_right_width, ctx.img_right_height,
+                                right_edge.location_x + nx_R, right_edge.location_y + ny_R,
+                                cos_R, sin_R, pR_plus, mR_plus, vR_plus);
+        extract_patch_stats_cpu(ctx.h_right_img, ctx.img_right_width, ctx.img_right_height,
+                                right_edge.location_x - nx_R, right_edge.location_y - ny_R,
+                                cos_R, sin_R, pR_minus, mR_minus, vR_minus);
+
+        const float sim_pp = compute_ncc_cpu(left_patch.pL_plus, left_patch.mL_plus, left_patch.vL_plus, pR_plus, mR_plus, vR_plus);
+        const float sim_pn = compute_ncc_cpu(left_patch.pL_plus, left_patch.mL_plus, left_patch.vL_plus, pR_minus, mR_minus, vR_minus);
+        const float sim_np = compute_ncc_cpu(left_patch.pL_minus, left_patch.mL_minus, left_patch.vL_minus, pR_plus, mR_plus, vR_plus);
+        const float sim_nn = compute_ncc_cpu(left_patch.pL_minus, left_patch.mL_minus, left_patch.vL_minus, pR_minus, mR_minus, vR_minus);
+        const float max_ncc = std::max(std::max(sim_pp, sim_pn), std::max(sim_np, sim_nn));
+        // Same predicate as Stereo_Matches::apply_NCC_Filtering and the device kernel (> not >=).
+        if (max_ncc > ncc_thresh_f)
+            cpu_pass_set.insert(pair_key(p.left_edge_idx, p.right_edge_idx));
+        // Diagnostic only: pairs in a band just below threshold (sampling noise / old bugs).
+        else if (max_ncc > ncc_thresh_f - 2e-2f)
+            ++cpu_lenient_borderline;
+    }
+
+    if (cpu_lenient_borderline > 0) {
+        LOG_TEST("ncc_filter: " + std::to_string(cpu_lenient_borderline) +
+                 " candidate pairs in (NCC_THRESH-0.02, NCC_THRESH] — no pass on CPU with same rule as Stereo_Matches.cpp (> NCC_THRESH); "
+                 "NCC_THRESH=" + std::to_string(ncc_thresh_f));
+    }
+
+    size_t gpu_not_in_cpu = 0;
+    for (const auto key : gpu_final_set) {
+        if (!cpu_pass_set.count(key))
+            ++gpu_not_in_cpu;
+    }
+    size_t cpu_not_in_gpu = 0;
+    for (const auto key : cpu_pass_set) {
+        if (!gpu_final_set.count(key))
+            ++cpu_not_in_gpu;
+    }
+
+    if (gpu_invalid_idx > 0 || gpu_not_in_candidates > 0 || gpu_not_in_cpu > 0 || gpu_below_threshold > 0) {
+        LOG_ERROR("ncc_filter: GPU produced invalid/extra matches compared to CPU reference"
+                  " (gpu_invalid_idx=" + std::to_string(gpu_invalid_idx) +
+                  ", gpu_not_in_candidates=" + std::to_string(gpu_not_in_candidates) +
+                  ", gpu_not_in_cpu=" + std::to_string(gpu_not_in_cpu) +
+                  ", gpu_below_thresh=" + std::to_string(gpu_below_threshold) +
+                  ", gpu_duplicates=" + std::to_string(gpu_duplicates) +
+                  ", gpu_unique=" + std::to_string(gpu_final_set.size()) +
+                  ", cpu_unique=" + std::to_string(cpu_pass_set.size()) + ")");
+        return;
+    }
+
+    const double recall = cpu_pass_set.empty()
+                              ? 1.0
+                              : static_cast<double>(gpu_final_set.size()) / static_cast<double>(cpu_pass_set.size());
+    if (cpu_not_in_gpu == 0) {
+        LOG_TEST("ncc_filter: GPU matches equal CPU NCC-pass set (" +
+                 std::to_string(cpu_pass_set.size()) + " unique pairs)");
+    } else {
+        LOG_WARNING("ncc_filter: GPU is a strict subset of CPU NCC-pass set"
+                    " (missing=" + std::to_string(cpu_not_in_gpu) +
+                    ", gpu_unique=" + std::to_string(gpu_final_set.size()) +
+                    ", cpu_unique=" + std::to_string(cpu_pass_set.size()) +
                     ", recall=" + std::to_string(recall) +
                     ", duplicates=" + std::to_string(gpu_duplicates) + ")");
     }

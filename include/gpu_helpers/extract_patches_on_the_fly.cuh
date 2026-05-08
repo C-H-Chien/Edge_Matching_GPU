@@ -34,7 +34,8 @@ static __device__ __forceinline__ void extract_patch_stats_on_the_fly(
     
     int total_pixels = (2 * PATCH_RADIUS + 1) * (2 * PATCH_RADIUS + 1);
     mean = sum / total_pixels;
-    variance = (variance < 1e-5f) ? (1e-5f) : ((sum_sq / total_pixels) - (mean * mean));
+    variance = (sum_sq / total_pixels) - (mean * mean);
+    variance = (variance < 1e-5f) ? (1e-5f) : variance;
 }
 
 #endif

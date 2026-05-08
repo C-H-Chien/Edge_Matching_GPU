@@ -60,7 +60,9 @@ private:
     Edge_GPU* h_right_edges = nullptr;
     int* h_cell_ids = nullptr;
     int h_match_count_passing_EP_LP_OR_filters = 0;
-    float* h_F = nullptr;
+    int h_match_count_passing_NCC_filter = 0;
+    float h_F_row_major_[9] = {};
+    float* h_F = h_F_row_major_;
     Match_by_Edge_Index* h_matches_out = nullptr;
 
     //> Pointers to the device memory
@@ -87,9 +89,15 @@ private:
     Dataset::Ptr dataset_;
     Eigen::Matrix3f h_F_;
 
+    /** Valid for comparisons only if the StereoFrame outlives this pipeline instance (same as Pipeline::current_frame). */
+    const StereoFrame* stereo_frame_ptr_ = nullptr;
+
+    //> GPU results validation
     Stereo_Matches_GPU_Test_Context make_test_context() const;
     void test_spatial_grid_mapping() const;
     void test_epipolar_rasterization() const;
+    void test_EP_LP_OR_vs_stereo_matches_cpu() const;
+    void test_ncc_filter() const;
 };
 
 namespace {

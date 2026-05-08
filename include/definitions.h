@@ -21,6 +21,9 @@
 #define EDGE_CLUSTER_THRESH (0.3) //> in pixels
 #define ORTHOGONAL_SHIFT_MAG (5)  //> in pixels
 #define PATCH_SIZE (7)            //> in pixels
+//> Matches Stereo_Matches::apply_orientation_filter(..., orientation_threshold = 10.0, ...)
+//> before apply_NCC_Filtering in get_Stereo_Edge_Pairs (degrees — same criterion as parallel OR ~anti-parallel ± tol).
+#define EDGE_PAIR_ORIENTATION_PREFILTER_DEG (10.0)
 #define NCC_THRESH (0.6)
 #define SIFT_THRESHOLD (500.0)
 
