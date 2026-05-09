@@ -26,6 +26,7 @@ struct GPU_Timing_Statistics
     float time_apply_BNB_NCC_filter;
     float time_apply_BNB_SIFT_filter;
     float time_apply_epipolar_shift_photometric_refine_and_merge;
+    float time_apply_second_NCC_filter;
     float total_time;
 };
 
@@ -48,6 +49,7 @@ public:
     float apply_BNB_NCC_filter();
     float apply_BNB_SIFT_filter();
     float apply_epipolar_shift_photometric_refine_and_merge();
+    float apply_second_NCC_filter();
 
     //> Writes the GPU SIFT-passing matches for the current frame to
     //> `<dataset_output_path>/gpu_sift_matches_frame_<frame_idx>.txt` as
@@ -112,6 +114,9 @@ private:
     float* d_sift_scores_passing_BNB_SIFT_filter = nullptr;
     Merged_Refined_Stereo_Match_GPU* d_merged_refined_matches = nullptr;
     int* d_merged_refined_count = nullptr;
+    Merged_Refined_Stereo_Match_GPU* d_prev_merged_matches = nullptr;
+    int* d_prev_merged_count = nullptr;
+    float* d_ncc_scores_passing_second_NCC_filter = nullptr;
     CUDA_Texture_Wrapper left_image_texture_ = {nullptr, 0};
     CUDA_Texture_Wrapper right_image_texture_ = {nullptr, 0};
     bool b_image_textures_ready_ = false;

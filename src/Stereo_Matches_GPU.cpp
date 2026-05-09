@@ -240,6 +240,11 @@ void Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU() {
     //> Shift edhe pair hypothesis onto the epipolar line and refine the edge location by minimizing the photometric residual, with consolidation as the final step
     GPU_time_collection.time_apply_epipolar_shift_photometric_refine_and_merge = apply_epipolar_shift_photometric_refine_and_merge();
     std::cout << "Number of matches after GPU shift + refine + merge: " << h_match_count_merged_after_refine << std::endl;
+
+    //> Apply the second NCC filter
+    GPU_time_collection.time_apply_second_NCC_filter = apply_second_NCC_filter();
+    std::cout << "Number of matches passing the second NCC filter: " << h_match_count_passing_NCC_filter << std::endl;
+
 }
 
 float Stereo_Matches_GPU_Pipeline::build_edge_spatial_map() {
@@ -412,6 +417,33 @@ void Stereo_Matches_GPU_Pipeline::release_merged_refined_outputs()
     }
 }
 
+float Stereo_Matches_GPU_Pipeline::apply_BNB_SIFT_filter() {
+
+    //> Sanity check
+    if (h_match_count_passing_SIFT_filter <= 0 || d_sift_scores_passing_SIFT_filter == nullptr) {
+        LOG_ERROR("Something's wrong: zero matches passing SIFT filter or SIFT scores are not allocated");
+        h_match_count_passing_BNB_SIFT_filter = 0;
+        return 0.0f;
+    }
+
+    //> Reuse the best-and-nearly-best filter kernel for SIFT similarities
+    return apply_best_nearly_best_filter_pipeline(
+        device_id,
+        h_match_count_passing_BNB_SIFT_filter,
+        d_final_matches_passing_SIFT_filter,
+        d_sift_scores_passing_SIFT_filter,
+        d_final_matches_passing_BNB_SIFT_filter,
+        d_sift_scores_passing_BNB_SIFT_filter,
+        d_final_count_passing_BNB_SIFT_filter,
+        h_match_count_passing_SIFT_filter,
+        static_cast<int>(num_left_edges_),
+        static_cast<float>(BNB_SIFT),
+        false,
+        start,
+        stop
+    );
+}
+
 float Stereo_Matches_GPU_Pipeline::apply_epipolar_shift_photometric_refine_and_merge()
 {
     release_merged_refined_outputs();
@@ -446,28 +478,34 @@ float Stereo_Matches_GPU_Pipeline::apply_epipolar_shift_photometric_refine_and_m
     return time_of_epipolar_shift_refine_and_merge;
 }
 
-float Stereo_Matches_GPU_Pipeline::apply_BNB_SIFT_filter() {
+float Stereo_Matches_GPU_Pipeline::apply_second_NCC_filter() {
+
+    int num_candidates = h_match_count_merged_after_refine;
 
     //> Sanity check
-    if (h_match_count_passing_SIFT_filter <= 0 || d_sift_scores_passing_SIFT_filter == nullptr) {
-        LOG_ERROR("Something's wrong: zero matches passing SIFT filter or SIFT scores are not allocated");
-        h_match_count_passing_BNB_SIFT_filter = 0;
+    if (num_candidates <= 0) {
+        LOG_ERROR("Something's wrong here: no matches to apply the second NCC filter");
         return 0.0f;
     }
 
-    //> Reuse the best-and-nearly-best filter kernel for SIFT similarities
-    return apply_best_nearly_best_filter_pipeline(
+    //> Keep the previous matches and count by assigning the pointers to the "previous" ones
+    d_prev_merged_matches = d_merged_refined_matches;
+    d_prev_merged_count = d_merged_refined_count;
+
+    //> Reset the merged refined matches and count
+    d_merged_refined_matches = nullptr;
+    d_merged_refined_count = nullptr;
+
+    return apply_second_NCC_filter_on_merged_edges_pipeline(
         device_id,
-        h_match_count_passing_BNB_SIFT_filter,
-        d_final_matches_passing_SIFT_filter,
-        d_sift_scores_passing_SIFT_filter,
-        d_final_matches_passing_BNB_SIFT_filter,
-        d_sift_scores_passing_BNB_SIFT_filter,
-        d_final_count_passing_BNB_SIFT_filter,
-        h_match_count_passing_SIFT_filter,
-        static_cast<int>(num_left_edges_),
-        static_cast<float>(BNB_SIFT),
-        false,
+        h_match_count_passing_NCC_filter,
+        right_image_texture_.texObj,
+        d_left_patches,
+        d_prev_merged_matches,
+        num_candidates,
+        d_merged_refined_matches,
+        d_merged_refined_count,
+        d_ncc_scores_passing_second_NCC_filter,
         start,
         stop
     );
@@ -675,6 +713,10 @@ Stereo_Matches_GPU_Pipeline::~Stereo_Matches_GPU_Pipeline()
     if (d_final_matches_passing_BNB_SIFT_filter) cudacheck( cudaFree(d_final_matches_passing_BNB_SIFT_filter) );
     if (d_final_count_passing_BNB_SIFT_filter) cudacheck( cudaFree(d_final_count_passing_BNB_SIFT_filter) );
     if (d_sift_scores_passing_BNB_SIFT_filter) cudacheck( cudaFree(d_sift_scores_passing_BNB_SIFT_filter) );
+    if (d_ncc_scores_passing_second_NCC_filter) cudacheck( cudaFree(d_ncc_scores_passing_second_NCC_filter) );
+
+    cudacheck( cudaFree(d_prev_merged_matches) );
+    cudacheck( cudaFree(d_prev_merged_count) );
 
     cudacheck(cudaEventDestroy(start));
     cudacheck(cudaEventDestroy(stop));

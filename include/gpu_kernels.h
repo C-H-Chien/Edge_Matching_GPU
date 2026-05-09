@@ -239,4 +239,19 @@ float combined_edge_epipolar_shift_and_refine_and_merge_pipeline(
     cudaEvent_t                                 stop
 );
 
+//> Apply NCC directly on merged refined right hypotheses (defined in apply_NCC_on_the_fly.cu)
+float apply_second_NCC_filter_on_merged_edges_pipeline(
+    int                         device_id,
+    int                         &h_NCC_match_count_out,
+    cudaTextureObject_t         right_tex,
+    const Precomputed_Edge_Patches_Photometry* d_left_patches,
+    const Merged_Refined_Stereo_Match_GPU* d_merged_matches_in,
+    int                         num_candidates,
+    Merged_Refined_Stereo_Match_GPU* &d_merged_matches_out,
+    int*                        &d_merged_count_out,
+    float*                      &d_ncc_scores_out,
+    cudaEvent_t                 start,
+    cudaEvent_t                 stop
+);
+
 #endif // GPU_KERNELS_H
