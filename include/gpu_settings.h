@@ -5,7 +5,7 @@
 //> Macro definitions for GPU settings
 #define DEVICE_ID (0)
 
-#define COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING (true)
+#define COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING (false)
 
 #define NUM_OF_THREADBLOCKS_SPATIAL_GRID_MAPPING (256)
 #define GRID_CELL_SIZE (16)
@@ -25,6 +25,12 @@
 #define SIFT_DESCRIPTOR_DIM (SIFT_DESCRIPTOR_GRID_SIZE * SIFT_DESCRIPTOR_GRID_SIZE * SIFT_DESCRIPTOR_ORIENTATION_BINS)
 #define SIFT_DESCRIPTOR_SAMPLE_WIDTH (16)
 #define SIFT_DESCRIPTOR_SCALE (512.0)
+
+//> GPU epipolar shift and refine parameters
+#define GPU_EP_REFINE_MAX_ITER (20)
+#define GPU_EP_REFINE_TOL (1e-3f)
+#define GPU_EP_REFINE_HUBER_DELTA (3.0f)
+#define GPU_MERGE_MAX_SEGMENT_SIZE (384)
 
 //> CUDA error check
 #define cudacheck( a )  do { \

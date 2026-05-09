@@ -31,6 +31,24 @@ struct CUDA_Texture_Wrapper {
     cudaTextureObject_t texObj;
 };
 
+//> This struct is per edge pair hypothesis used in the edge location refinement step
+struct Refined_Edge_Hypothesis_Match_GPU {
+    int left_edge_idx;
+    int right_edge_idx;
+    float refined_right_x;
+    float refined_right_y;
+    float photometric_rms;
+    float source_right_orientation;
+};
+
+//> One consolidated match per distance-cluster after merge (no TOED right index — geometry is fused).
+struct Merged_Refined_Stereo_Match_GPU {
+    int left_edge_idx;
+    float merged_right_x;
+    float merged_right_y;
+    float merged_right_orientation;
+};
+
 //> The left edge patches are pre-computed and stored in global memory
 struct Precomputed_Edge_Patches_Photometry {
     float pL_plus[TOTAL_NUM_OF_PATCH_PIXELS];
@@ -197,6 +215,28 @@ float apply_best_nearly_best_filter_pipeline(
     bool                        higher_is_better,
     cudaEvent_t                 start,
     cudaEvent_t                 stop
+);
+
+//> Shift right candidate edges onto the epipolar line, GN refine along the epipolar line based on Huber photometric residual,
+//> then merge hypotheses per left edge using distance-only clustering (defined in combined_edge_epipolar_shift_and_refine_and_merge_pipeline.cu)
+float combined_edge_epipolar_shift_and_refine_and_merge_pipeline(
+    int                                         device_id,
+    /* Data live in the CUDA texture memory */
+    cudaTextureObject_t                         right_tex,
+    /* Data live in the device memory */
+    const float*                                d_F,
+    const Edge_GPU*                             d_left_edges,
+    const Edge_GPU*                             d_right_edges,
+    const Precomputed_Edge_Patches_Photometry*  d_left_patches,
+    const Match_by_Edge_Index*                  d_matches_in,
+    Merged_Refined_Stereo_Match_GPU*&           d_merged_matches_out,
+    int*&                                       d_merged_count_out,
+    /* Others */
+    int                                         num_matches_in,
+    int                                         img_right_width,
+    int                                         img_right_height,    
+    cudaEvent_t                                 start,
+    cudaEvent_t                                 stop
 );
 
 #endif // GPU_KERNELS_H

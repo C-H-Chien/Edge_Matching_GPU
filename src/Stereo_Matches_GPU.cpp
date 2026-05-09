@@ -232,10 +232,14 @@ void Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU() {
     #endif
 
     //> Apply Best-Nearly-Best in GPU for NCC and SIFT scores.
-    apply_BNB_NCC_filter();
+    GPU_time_collection.time_apply_BNB_NCC_filter = apply_BNB_NCC_filter();
     std::cout << "Number of matches passing GPU BNB-NCC filter: " << h_match_count_passing_BNB_NCC_filter << std::endl;
-    apply_BNB_SIFT_filter();
+    GPU_time_collection.time_apply_BNB_SIFT_filter = apply_BNB_SIFT_filter();
     std::cout << "Number of matches passing GPU BNB-SIFT filter: " << h_match_count_passing_BNB_SIFT_filter << std::endl;
+
+    //> Shift edhe pair hypothesis onto the epipolar line and refine the edge location by minimizing the photometric residual, with consolidation as the final step
+    GPU_time_collection.time_apply_epipolar_shift_photometric_refine_and_merge = apply_epipolar_shift_photometric_refine_and_merge();
+    std::cout << "Number of matches after GPU shift + refine + merge: " << h_match_count_merged_after_refine << std::endl;
 }
 
 float Stereo_Matches_GPU_Pipeline::build_edge_spatial_map() {
@@ -395,6 +399,53 @@ float Stereo_Matches_GPU_Pipeline::apply_BNB_NCC_filter() {
     );
 }
 
+void Stereo_Matches_GPU_Pipeline::release_merged_refined_outputs()
+{
+    h_match_count_merged_after_refine = 0;
+    if (d_merged_refined_matches != nullptr) {
+        cudacheck(cudaFree(d_merged_refined_matches));
+        d_merged_refined_matches = nullptr;
+    }
+    if (d_merged_refined_count != nullptr) {
+        cudacheck(cudaFree(d_merged_refined_count));
+        d_merged_refined_count = nullptr;
+    }
+}
+
+float Stereo_Matches_GPU_Pipeline::apply_epipolar_shift_photometric_refine_and_merge()
+{
+    release_merged_refined_outputs();
+    h_match_count_merged_after_refine = 0;
+
+    if (h_match_count_passing_BNB_SIFT_filter <= 0 || d_final_matches_passing_BNB_SIFT_filter == nullptr || d_left_patches == nullptr) {
+        LOG_ERROR("Something's wrong: zero matches passing SIFT filter or SIFT scores are not allocated");
+        return -1.0f;
+    }
+
+    float time_of_epipolar_shift_refine_and_merge = 
+    combined_edge_epipolar_shift_and_refine_and_merge_pipeline(
+        device_id,
+        right_image_texture_.texObj,
+        d_F,
+        d_left_edges,
+        d_right_edges,
+        d_left_patches,
+        d_final_matches_passing_BNB_SIFT_filter,
+        d_merged_refined_matches,
+        d_merged_refined_count,
+        h_match_count_passing_BNB_SIFT_filter,
+        img_right_width,
+        img_right_height,
+        start,
+        stop
+    );
+
+    if (d_merged_refined_count != nullptr)
+        cudacheck(cudaMemcpy(&h_match_count_merged_after_refine, d_merged_refined_count, sizeof(int), cudaMemcpyDeviceToHost));
+
+    return time_of_epipolar_shift_refine_and_merge;
+}
+
 float Stereo_Matches_GPU_Pipeline::apply_BNB_SIFT_filter() {
 
     //> Sanity check
@@ -534,10 +585,66 @@ void Stereo_Matches_GPU_Pipeline::write_sift_matches_to_file(size_t frame_idx) c
     std::cout << std::endl;
 }
 
+void Stereo_Matches_GPU_Pipeline::write_refined_merged_matches_to_file(size_t frame_idx) const
+{
+    if (d_merged_refined_matches == nullptr || d_merged_refined_count == nullptr) {
+        LOG_WARNING("write_refined_merged_matches_to_file: refined/merge outputs not allocated; skipping");
+        return;
+    }
+
+    int n = 0;
+    cudaError_t err = cudaMemcpy(&n, d_merged_refined_count, sizeof(int), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        LOG_ERROR(std::string("write_refined_merged_matches_to_file: cudaMemcpy count failed: ") + cudaGetErrorString(err));
+        return;
+    }
+    if (n < 0) {
+        LOG_ERROR("write_refined_merged_matches_to_file: invalid negative merged count");
+        return;
+    }
+    if (n == 0) {
+        LOG_WARNING("write_refined_merged_matches_to_file: zero merged matches; skipping file write");
+        return;
+    }
+
+    std::vector<Merged_Refined_Stereo_Match_GPU> rows(static_cast<size_t>(n));
+    err = cudaMemcpy(rows.data(), d_merged_refined_matches, static_cast<size_t>(n) * sizeof(Merged_Refined_Stereo_Match_GPU),
+                     cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        LOG_ERROR(std::string("write_refined_merged_matches_to_file: cudaMemcpy merged rows failed: ") + cudaGetErrorString(err));
+        return;
+    }
+
+    const std::string output_dir = (dataset_ != nullptr) ? dataset_->get_output_path() : std::string("output_files");
+    const std::string filename = output_dir + "/gpu_refined_merged_matches_frame_" + std::to_string(frame_idx) + ".txt";
+    std::ofstream outfile(filename);
+    if (!outfile.is_open()) {
+        LOG_ERROR("write_refined_merged_matches_to_file: cannot open " + filename);
+        return;
+    }
+    outfile << "left_idx left_x left_y left_orientation merged_right_x merged_right_y merged_right_orientation\n";
+    outfile.precision(8);
+
+    size_t skipped = 0;
+    for (int i = 0; i < n; ++i) {
+        const Merged_Refined_Stereo_Match_GPU& row = rows[static_cast<size_t>(i)];
+        if (row.left_edge_idx < 0 || static_cast<size_t>(row.left_edge_idx) >= num_left_edges_) {
+            ++skipped;
+            continue;
+        }
+        const Edge_GPU& le = h_left_edges[row.left_edge_idx];
+        outfile << row.left_edge_idx << " " << le.location_x << " " << le.location_y << " " << le.orientation << " "
+                << row.merged_right_x << " " << row.merged_right_y << " " << row.merged_right_orientation << "\n";
+    }
+    outfile.close();
+    std::cout << "Wrote " << (static_cast<size_t>(n) - skipped) << " GPU refined merged matches to " << filename << std::endl;
+}
+
 Stereo_Matches_GPU_Pipeline::~Stereo_Matches_GPU_Pipeline()
 {
     //> h_F aliases fixed storage h_F_row_major_; no need to free it.
     release_image_textures();
+    release_merged_refined_outputs();
 
     delete[] h_left_img;
     delete[] h_right_img;

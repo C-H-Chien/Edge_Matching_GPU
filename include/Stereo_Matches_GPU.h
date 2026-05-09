@@ -23,6 +23,10 @@ struct GPU_Timing_Statistics
     float time_precompute_left_edge_patches_photometry;
     float time_apply_NCC_filter;
     float time_apply_SIFT_descriptor_filter;
+    float time_apply_BNB_NCC_filter;
+    float time_apply_BNB_SIFT_filter;
+    float time_apply_epipolar_shift_photometric_refine_and_merge;
+    float total_time;
 };
 
 class Stereo_Matches_GPU_Pipeline {
@@ -43,12 +47,16 @@ public:
     float apply_SIFT_descriptor_filter();
     float apply_BNB_NCC_filter();
     float apply_BNB_SIFT_filter();
+    float apply_epipolar_shift_photometric_refine_and_merge();
 
     //> Writes the GPU SIFT-passing matches for the current frame to
     //> `<dataset_output_path>/gpu_sift_matches_frame_<frame_idx>.txt` as
     //> `left_idx left_x left_y left_orientation right_idx right_x right_y right_orientation`,
     //> one row per surviving match. Used for offline plotting / visual inspection.
     void write_sift_matches_to_file(size_t frame_idx) const;
+    //> After apply_epipolar_shift_photometric_refine_and_merge: writes merged refined matches
+    //> (refined right xy, indices, photometric RMS).
+    void write_refined_merged_matches_to_file(size_t frame_idx) const;
 
     int device_id;
     int img_left_height, img_right_height;
@@ -74,6 +82,7 @@ private:
     int h_match_count_passing_SIFT_filter = 0;
     int h_match_count_passing_BNB_NCC_filter = 0;
     int h_match_count_passing_BNB_SIFT_filter = 0;
+    int h_match_count_merged_after_refine = 0;
     float h_F_row_major_[9] = {};
     float* h_F = h_F_row_major_;
     Match_by_Edge_Index* h_matches_out = nullptr;
@@ -101,6 +110,8 @@ private:
     int* d_final_count_passing_BNB_SIFT_filter = nullptr;
     Match_by_Edge_Index* d_final_matches_passing_BNB_SIFT_filter = nullptr;
     float* d_sift_scores_passing_BNB_SIFT_filter = nullptr;
+    Merged_Refined_Stereo_Match_GPU* d_merged_refined_matches = nullptr;
+    int* d_merged_refined_count = nullptr;
     CUDA_Texture_Wrapper left_image_texture_ = {nullptr, 0};
     CUDA_Texture_Wrapper right_image_texture_ = {nullptr, 0};
     bool b_image_textures_ready_ = false;
@@ -120,6 +131,7 @@ private:
 
     void allocate_image_textures();
     void release_image_textures();
+    void release_merged_refined_outputs();
 
     //> GPU results validation
     Stereo_Matches_GPU_Test_Context make_test_context() const;
