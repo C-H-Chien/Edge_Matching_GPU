@@ -40,7 +40,7 @@ public:
     ~Stereo_Matches_GPU_Pipeline();
 
     //> main function for constructing stereo edge correspondences
-    void get_stereo_edge_matching_GPU();
+    void get_stereo_edge_matching_GPU(size_t frame_idx);
 
     float build_edge_spatial_map();
     float rasterize_epipolar_band_for_matches();
@@ -53,14 +53,8 @@ public:
     float apply_second_NCC_filter();
     float apply_best_second_ncc_per_left_after_second_NCC();
 
-    //> Writes the GPU SIFT-passing matches for the current frame to
-    //> `<dataset_output_path>/gpu_sift_matches_frame_<frame_idx>.txt` as
-    //> `left_idx left_x left_y left_orientation right_idx right_x right_y right_orientation`,
-    //> one row per surviving match. Used for offline plotting / visual inspection.
-    void write_sift_matches_to_file(size_t frame_idx) const;
-    //> After apply_epipolar_shift_photometric_refine_and_merge: writes merged refined matches
-    //> (refined right xy, indices, photometric RMS).
-    void write_refined_merged_matches_to_file(size_t frame_idx) const;
+    //> Write the final stereo matching from GPU to a file; used for offline plotting and visual inspection
+    void write_finalized_matches_to_file(size_t frame_idx) const;
 
     int device_id;
     int img_left_height, img_right_height;

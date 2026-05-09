@@ -456,8 +456,6 @@ float combined_edge_epipolar_shift_and_refine_and_merge_pipeline(
     cudacheck(cudaEventSynchronize(stop));
     cudacheck(cudaEventElapsedTime(&time_of_epipolar_shift_refine_and_merge, start, stop));
 
-    printf("GPU epipolar shift + photometric refine + distance merge (%d hyps -> %d segments): %f ms\n", num_matches_in, num_of_segments, time_of_epipolar_shift_refine_and_merge);
-
     return time_of_epipolar_shift_refine_and_merge;
 }
 

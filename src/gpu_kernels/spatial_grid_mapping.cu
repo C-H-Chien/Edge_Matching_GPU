@@ -152,9 +152,7 @@ float edge_spatial_map_thrust_pipeline(
     cudaEvent_t     start,
     cudaEvent_t     stop)
 {
-    //> Copy edges data from host to device
     cudacheck( cudaSetDevice(device_id) );
-    cudacheck( cudaMemcpy( d_right_edges, h_right_edges, num_right_edges * sizeof(Edge_GPU), cudaMemcpyHostToDevice) );
 
     //> Wrap raw pointers in thrust::device_ptr; this allows Thrust to interact with memory allocated via cudaMalloc
     thrust::device_ptr<int> t_cell_ids(d_cell_ids);
@@ -164,6 +162,9 @@ float edge_spatial_map_thrust_pipeline(
 
     //> Start the CUDA event timer
     cudacheck(cudaEventRecord(start));
+
+    //> Copy edges data from host to device
+    cudacheck( cudaMemcpy( d_right_edges, h_right_edges, num_right_edges * sizeof(Edge_GPU), cudaMemcpyHostToDevice) );
 
     //> Initialize arrays using Thrust. By default the cells are empty.
     thrust::fill(t_cell_start_idx, t_cell_start_idx + total_num_of_grid_cells, 0);
@@ -217,8 +218,6 @@ float edge_spatial_map_thrust_pipeline(
     cudacheck(cudaEventRecord(stop));
     cudacheck(cudaEventSynchronize(stop));
     cudacheck(cudaEventElapsedTime(&build_spatial_grid_time, start, stop));
-
-    std::cout << "Time for spatial grid mapping: " << build_spatial_grid_time << " milliseconds" << std::endl;
 
     //> TEST: Copy cell ids data from device to host
     #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING

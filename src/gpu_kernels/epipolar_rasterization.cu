@@ -195,6 +195,9 @@ float epipolar_rasterization_thick_band_pipeline(
     cudaEvent_t             stop)
 {
     cudacheck(cudaSetDevice(device_id));
+
+    //> Start the CUDA event timer
+    cudacheck(cudaEventRecord(start));
     
     //> Copy data from host to device
     cudacheck( cudaMemcpy( d_F, h_F, 9 * sizeof(float), cudaMemcpyHostToDevice ) );
@@ -202,9 +205,6 @@ float epipolar_rasterization_thick_band_pipeline(
 
     //> Initialize the number of edges per grid cell as 0
     cudacheck( cudaMemset(d_match_count,  0, sizeof(int)) );
-
-    //> Start the CUDA event timer
-    cudacheck(cudaEventRecord(start));
 
     //> Create and Launch the GPU kernel: assign each right edge a grid cell id based on its location
     epipolar_rasterization_thick_band_kernel_launcher( device_id, d_left_edges, d_right_edges, d_edge_indices, d_cell_start_idx, d_num_of_edges_in_cell, d_F, num_of_left_edges, \
@@ -217,8 +217,6 @@ float epipolar_rasterization_thick_band_pipeline(
     cudacheck(cudaEventRecord(stop));
     cudacheck(cudaEventSynchronize(stop));
     cudacheck(cudaEventElapsedTime(&epipolar_rasterization_time, start, stop));
-
-    std::cout << "Time for epipolar rasterization: " << epipolar_rasterization_time << " milliseconds" << std::endl;
 
     //> Copy match count to host for downstream stages (must stay in sync with d_match_count)
     h_match_count_out = 0;

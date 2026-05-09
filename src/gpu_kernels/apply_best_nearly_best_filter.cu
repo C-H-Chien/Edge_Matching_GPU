@@ -67,7 +67,8 @@ __global__ void apply_best_nearly_best_filter_kernel(
     bool keep = false;
     if (b_higher_is_better) {
         keep = (score >= ratio_threshold * best);
-    } else {
+    } 
+    else {
         const float denom = fmaxf(ratio_threshold, 1e-6f);
         keep = (score <= best / denom);
     }
@@ -98,6 +99,9 @@ float apply_best_nearly_best_filter_pipeline(
 
     float* d_best_scores_per_left_edge = nullptr;
 
+    //> Start the CUDA event timer
+    cudacheck(cudaEventRecord(start));
+
     //> Allocate memory for the outputs: final matches, final scores, and final number of matches passing the BNB filter
     cudacheck(cudaMalloc(&d_final_matches_passing_bnb_filter, static_cast<size_t>(num_candidates) * sizeof(Match_by_Edge_Index)));
     cudacheck(cudaMalloc(&d_final_count_passing_bnb_filter, sizeof(int)));
@@ -106,9 +110,6 @@ float apply_best_nearly_best_filter_pipeline(
 
     //> Allocate memory for the best scores per left edge
     cudacheck(cudaMalloc(&d_best_scores_per_left_edge, static_cast<size_t>(num_left_edges > 0 ? num_left_edges : 1) * sizeof(float)));
-
-    //> Start the CUDA event timer
-    cudacheck(cudaEventRecord(start));
 
     //> The first kernel is to compute the best score per left edge
     //> This assigns one thread per left edge
@@ -154,7 +155,6 @@ float apply_best_nearly_best_filter_pipeline(
 
     cudacheck(cudaFree(d_best_scores_per_left_edge));
 
-    LOG_INFO("Time for applying GPU Best-Nearly-Best filter: " + std::to_string(apply_bnb_filter_time) + " milliseconds");
     return apply_bnb_filter_time;
 }
 

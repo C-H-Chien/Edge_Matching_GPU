@@ -83,12 +83,12 @@ float precompute_left_edge_patches_photometry_pipeline(
     cudaEvent_t     stop) 
 {
     cudacheck(cudaSetDevice(device_id));
-    
-    //> Allocate intermediate device memory for precomputed patches
-    cudacheck(cudaMalloc(&d_left_patches, num_of_left_edges * sizeof(Precomputed_Edge_Patches_Photometry)));
 
     //> Start the CUDA event timer
     cudacheck(cudaEventRecord(start));
+    
+    //> Allocate intermediate device memory for precomputed patches
+    cudacheck(cudaMalloc(&d_left_patches, num_of_left_edges * sizeof(Precomputed_Edge_Patches_Photometry)));
 
     //> Launch precompute kernel
     precompute_left_edge_patches_photometry_kernel_launcher( device_id, d_left_edges, d_left_patches, left_tex, num_of_left_edges );
@@ -99,8 +99,6 @@ float precompute_left_edge_patches_photometry_pipeline(
     cudacheck(cudaEventRecord(stop));
     cudacheck(cudaEventSynchronize(stop));
     cudacheck(cudaEventElapsedTime(&precompute_left_edge_patches_photometry_time, start, stop));
-
-    std::cout << "Time for precompute left edge patches photometry: " << precompute_left_edge_patches_photometry_time << " milliseconds" << std::endl;
 
     return precompute_left_edge_patches_photometry_time;
 }

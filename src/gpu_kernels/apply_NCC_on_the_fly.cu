@@ -131,11 +131,11 @@ float apply_NCC_filter_pipeline(
 {
     cudacheck(cudaSetDevice(device_id));
 
-    //> atomicAdd target must be zero-initialized before the kernel launch
-    cudacheck(cudaMemset(d_match_count_passing_NCC_filter, 0, sizeof(int)));
-
     //> Start the CUDA event timer
     cudacheck(cudaEventRecord(start));
+
+    //> atomicAdd target must be zero-initialized before the kernel launch
+    cudacheck(cudaMemset(d_match_count_passing_NCC_filter, 0, sizeof(int)));    
 
     //> Launch the NCC filter kernel
     if (num_candidates > 0) {
@@ -153,8 +153,6 @@ float apply_NCC_filter_pipeline(
     cudacheck(cudaEventRecord(stop));
     cudacheck(cudaEventSynchronize(stop));
     cudacheck(cudaEventElapsedTime(&apply_NCC_filter_time, start, stop));
-
-    std::cout << "Time for applying NCC filter: " << apply_NCC_filter_time << " milliseconds" << std::endl;
 
     //> Copy match count to host for downstream stages (must stay in sync with d_match_count)
     h_NCC_match_count_out = 0;

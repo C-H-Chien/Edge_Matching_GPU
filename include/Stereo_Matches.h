@@ -108,6 +108,14 @@ public:
 
     void write_finalized_stereo_edge_pairs_to_file(Dataset::Ptr dataset, const std::vector<final_stereo_edge_pair> &final_stereo_edge_pairs, size_t frame_idx);
 
+    /** Writes `(left_idx, right_idx, …)` rows for every candidate cluster at this pipeline stage (GT-focused subset).
+     *  Compare with `cpu_ep_lp_or_gpu_geom_reference_*` and `gpu_stage_*` files when tuning GPU parity. */
+    void write_cpu_stereo_stage_snapshot(Dataset::Ptr dataset, const Stereo_Edge_Pairs &stereo_frame_edge_pairs,
+                                         const std::string &stage_tag, size_t frame_idx);
+
+    /** All left edges after EP+LP+OR with the same float32 geometry predicates as the GPU epipolar rasterizer (see collect_candidate_pairs_after_EP_LP_OR). */
+    void write_cpu_ep_lp_or_gpu_geom_reference_pairs(Dataset::Ptr dataset, const StereoFrame &frame, size_t frame_idx);
+
     //> write timings to a file
     void write_timings_to_file(std::ofstream &out_file_stream, Timing_Statistics &timing_statistics)
     {

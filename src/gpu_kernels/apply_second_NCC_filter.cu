@@ -72,6 +72,9 @@ float apply_second_NCC_filter_on_merged_edges_pipeline(
 {
     cudacheck(cudaSetDevice(device_id));
 
+    //> Start the CUDA event timer
+    cudacheck(cudaEventRecord(start));
+
     //> Allocate memory for the merged refined matches and count
     cudacheck(cudaMalloc(&d_merged_matches_out, static_cast<size_t>(num_candidates) * sizeof(Merged_Refined_Stereo_Match_GPU)));
     cudacheck(cudaMalloc(&d_merged_count_out, sizeof(int)));
@@ -81,9 +84,6 @@ float apply_second_NCC_filter_on_merged_edges_pipeline(
 
     //> Allocate memory for the NCC scores. THis will be used by the final filter which picks the best right edge candidatefrom the NCC scores.
     cudacheck(cudaMalloc(&d_ncc_scores_out, static_cast<size_t>(num_candidates) * sizeof(float)));
-
-    //> Start the CUDA event timer
-    cudacheck(cudaEventRecord(start));
 
     //> Assign one thread per candidate match
     int max_threads_per_block = 1024;
@@ -103,8 +103,6 @@ float apply_second_NCC_filter_on_merged_edges_pipeline(
     cudacheck(cudaEventRecord(stop));
     cudacheck(cudaEventSynchronize(stop));
     cudacheck(cudaEventElapsedTime(&time_of_second_NCC_filter, start, stop));
-
-    LOG_INFO("Time for applying second NCC filter: " + std::to_string(time_of_second_NCC_filter) + " milliseconds");
 
     h_NCC_match_count_out = 0;
     cudacheck(cudaMemcpy(&h_NCC_match_count_out, d_merged_count_out, sizeof(int), cudaMemcpyDeviceToHost));

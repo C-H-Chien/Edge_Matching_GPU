@@ -45,8 +45,8 @@ eval_edges_in_grid_cells(
 
         //> Standard left <-> right stereo: match must lie on finite epipolar segment in the right image (t in [0,1]),
         //> not only near the infinite line
-        if (left_edge.location_x < right_edge.location_x)
-            continue;
+        // if (left_edge.location_x < right_edge.location_x)
+        //     continue;
 
         float dist_to_epipolar_line = fabsf(a * right_edge.location_x + b * right_edge.location_y + c);
 

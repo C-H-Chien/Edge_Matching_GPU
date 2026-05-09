@@ -248,6 +248,9 @@ float apply_SIFT_descriptor_filter_pipeline(
 {
     cudacheck(cudaSetDevice(device_id));
 
+    //> Start the CUDA event timer
+    cudacheck(cudaEventRecord(start));
+
     //> Allocate memory for the final matches and number of matches passing the SIFT filter
     cudacheck(cudaMalloc(&d_final_matches_passing_SIFT_filter, static_cast<size_t>(num_ncc_matches) * sizeof(Match_by_Edge_Index)));
     cudacheck(cudaMalloc(&d_final_count_passing_SIFT_filter, sizeof(int)));
@@ -255,9 +258,6 @@ float apply_SIFT_descriptor_filter_pipeline(
 
     //> Initialize the number of matches passing the SIFT filter to 0
     cudacheck(cudaMemset(d_final_count_passing_SIFT_filter, 0, sizeof(int)));
-
-    //> Start the CUDA event timer
-    cudacheck(cudaEventRecord(start));
 
     //> Launch the SIFT descriptor filter kernel
     apply_SIFT_descriptor_filter_kernel_launcher( device_id, d_ncc_matches, d_left_edges, d_right_edges, d_final_matches_passing_SIFT_filter,
@@ -270,8 +270,6 @@ float apply_SIFT_descriptor_filter_pipeline(
     cudacheck(cudaEventRecord(stop));
     cudacheck(cudaEventSynchronize(stop));
     cudacheck(cudaEventElapsedTime(&apply_SIFT_filter_time, start, stop));
-
-    std::cout << "Time for applying GPU SIFT descriptor filter: " << apply_SIFT_filter_time << " milliseconds" << std::endl;
 
     h_SIFT_match_count_out = 0;
     cudacheck(cudaMemcpy(&h_SIFT_match_count_out, d_final_count_passing_SIFT_filter, sizeof(int), cudaMemcpyDeviceToHost));

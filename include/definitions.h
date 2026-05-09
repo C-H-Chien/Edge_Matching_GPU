@@ -17,12 +17,10 @@
 #define EPIPOLAR_LINE_DIST_THRESH (0.5)  //> in pixels
 #define EPIP_TENGENCY_ORIENT_THRESH (12) //> in degrees
 #define EPIP_TENGENCY_PROXIM_THRESH (4)  //> in pixels
-#define MAX_DISPARITY (100)
+#define MAX_DISPARITY (150)
 #define EDGE_CLUSTER_THRESH (0.3) //> in pixels
 #define ORTHOGONAL_SHIFT_MAG (5)  //> in pixels
 #define PATCH_SIZE (7)            //> in pixels
-//> Matches Stereo_Matches::apply_orientation_filter(..., orientation_threshold = 10.0, ...)
-//> before apply_NCC_Filtering in get_Stereo_Edge_Pairs (degrees — same criterion as parallel OR ~anti-parallel ± tol).
 #define EDGE_PAIR_ORIENTATION_PREFILTER_DEG (10.0)
 #define NCC_THRESH (0.6)
 #define SIFT_THRESHOLD (500.0)
@@ -79,6 +77,10 @@
 #define DEBUG_FALSE_NEGATIVES (false)
 #define DEBUG_COLLECT_NCC_AND_ERR (false)
 #define DEBUG_EDGE_MATCHES_BETWEEN_LEFT_IMGS (false)
+//> When 1, writes `cpu_*` text dumps from Stereo_Matches::get_Stereo_Edge_Pairs (see Stereo_Matches.cpp).
+#define WRITE_CPU_STEREO_STAGE_SNAPSHOTS (0)
+//> When 1, writes `gpu_stage_*` text dumps from Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU.
+#define WRITE_GPU_STEREO_STAGE_SNAPSHOTS (0)
 //> ----------------------------------------------
 #define WRITE_FEATURES_TO_FILE (false)
 #define WRITE_CORRESPONDENCES_TO_FILE (false)

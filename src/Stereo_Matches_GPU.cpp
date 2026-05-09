@@ -19,6 +19,91 @@
 #include "gpu_kernels.h"
 #include "Dataset.h"
 
+namespace {
+
+void write_gpu_stage_match_by_edge_index_file(
+    int device_id,
+    const Dataset::Ptr &dataset,
+    const Edge_GPU *h_left_edges,
+    size_t num_left_edges_,
+    const Edge_GPU *h_right_edges,
+    size_t num_right_edges_,
+    const Match_by_Edge_Index *d_matches,
+    const int *d_count,
+    const std::string &stage_tag,
+    size_t frame_idx)
+{
+#if !WRITE_GPU_STEREO_STAGE_SNAPSHOTS
+    (void)device_id;
+    (void)dataset;
+    (void)h_left_edges;
+    (void)num_left_edges_;
+    (void)h_right_edges;
+    (void)num_right_edges_;
+    (void)d_matches;
+    (void)d_count;
+    (void)stage_tag;
+    (void)frame_idx;
+    return;
+#else
+    if (!dataset || d_matches == nullptr || d_count == nullptr)
+        return;
+
+    cudacheck(cudaSetDevice(device_id));
+    int n = 0;
+    cudaError_t err = cudaMemcpy(&n, d_count, sizeof(int), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        LOG_ERROR(std::string("write_gpu_stage: cudaMemcpy count failed (") + stage_tag + "): " + cudaGetErrorString(err));
+        return;
+    }
+    if (n < 0) {
+        LOG_ERROR("write_gpu_stage: negative count (" + stage_tag + ")");
+        return;
+    }
+
+    std::vector<Match_by_Edge_Index> matches(static_cast<size_t>(n));
+    if (n > 0) {
+        err = cudaMemcpy(matches.data(), d_matches, static_cast<size_t>(n) * sizeof(Match_by_Edge_Index), cudaMemcpyDeviceToHost);
+        if (err != cudaSuccess) {
+            LOG_ERROR(std::string("write_gpu_stage: cudaMemcpy matches failed (") + stage_tag + "): " + cudaGetErrorString(err));
+            return;
+        }
+    }
+
+    const std::string output_dir = dataset->get_output_path();
+    const std::string filename = output_dir + "/gpu_stage_" + stage_tag + "_frame_" + std::to_string(frame_idx) + ".txt";
+    std::ofstream outfile(filename);
+    if (!outfile.is_open()) {
+        LOG_ERROR("write_gpu_stage: cannot open " + filename);
+        return;
+    }
+    outfile << "# GPU Match_by_Edge_Index dump at stage \"" << stage_tag << "\".\n";
+    outfile << "# Columns: left_idx right_idx left_x left_y left_orientation right_x right_y right_orientation\n";
+    outfile.precision(8);
+    outfile << std::fixed;
+
+    size_t skipped = 0;
+    for (const auto &m : matches) {
+        if (m.left_edge_idx < 0 || static_cast<size_t>(m.left_edge_idx) >= num_left_edges_ || m.right_edge_idx < 0
+            || static_cast<size_t>(m.right_edge_idx) >= num_right_edges_) {
+            ++skipped;
+            continue;
+        }
+        const Edge_GPU &le = h_left_edges[m.left_edge_idx];
+        const Edge_GPU &re = h_right_edges[m.right_edge_idx];
+        outfile << m.left_edge_idx << " " << m.right_edge_idx << " " << le.location_x << " " << le.location_y << " " << le.orientation << " "
+                << re.location_x << " " << re.location_y << " " << re.orientation << "\n";
+    }
+    outfile.close();
+    std::cout << "Wrote " << (matches.size() - skipped) << " GPU pairs (" << stage_tag << ") to " << filename;
+    if (skipped > 0)
+        std::cout << " (skipped " << skipped << " invalid rows)";
+    std::cout << std::endl;
+#endif
+}
+
+} // namespace
+
 Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, const StereoFrame& current_frame, int device)
     : device_id(device)
     ,img_left_height(mat_rows_prefer_undistorted(current_frame.left_image_undistorted, current_frame.left_image))
@@ -115,23 +200,18 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
         const char* cvd = ::getenv("CUDA_VISIBLE_DEVICES");
         std::string cvd_str = cvd ? std::string(" CUDA_VISIBLE_DEVICES=\"") + cvd + "\"." : "";
         throw std::runtime_error(
-            std::string("cudaGetDeviceCount failed: ") + cudaGetErrorString(err_count) +
-            " (error code " + std::to_string(static_cast<int>(err_count)) + "). "
-            "cudaDriverGetVersion=" + std::to_string(driver_ver) + ", cudaRuntimeGetVersion=" +
-            std::to_string(runtime_ver) + "." + cvd_str +
-            " Error 999 (cudaErrorUnknown) is commonly a **NVIDIA driver vs CUDA toolkit mismatch**: the top of "
-            "nvidia-smi shows the **maximum CUDA version the driver supports**; this binary uses libcudart 12.x "
-            "(see runtime number). Rebuild and run with a **CUDA toolkit module that is <= that driver max**, "
+            std::string("cudaGetDeviceCount failed: ") + cudaGetErrorString(err_count) + " (error code " + std::to_string(static_cast<int>(err_count)) + "). " +
+            "cudaDriverGetVersion=" + std::to_string(driver_ver) + ", cudaRuntimeGetVersion=" + std::to_string(runtime_ver) + "." + cvd_str +
+            " Error 999 (cudaErrorUnknown) is commonly a **NVIDIA driver vs CUDA toolkit mismatch**: the top of nvidia-smi shows the **maximum CUDA version the driver supports**; " +
+            "this binary uses libcudart 12.x (see runtime number). Rebuild and run with a **CUDA toolkit module that is <= that driver max**, "
             "or use a node with a newer driver. Check `ldd` on your binary to see which libcudart is loaded.");
     }
     if (n_cuda_devices == 0) {
         throw std::runtime_error(
-            "cudaGetDeviceCount returned success but reported 0 CUDA devices (runtime version " +
-            std::to_string(runtime_ver) +
-            "). If nvidia-smi lists a GPU, common causes are: (1) running outside your GPU Slurm allocation "
-            "in a shell that cannot access /dev/nvidia*; (2) CUDA_VISIBLE_DEVICES empty or invalid; "
-            "(3) cluster cgroup denies GPU to this process—launch main_VO from the same interactive GPU session "
-            "where nvidia-smi works.");
+            "cudaGetDeviceCount returned success but reported 0 CUDA devices (runtime version " + std::to_string(runtime_ver) + "). " + 
+            "If nvidia-smi lists a GPU, common causes are: (i) running outside your GPU Slurm allocation in a shell that cannot " + 
+            "access /dev/nvidia*; (ii) CUDA_VISIBLE_DEVICES empty or invalid; (iii) cluster cgroup denies GPU to this process—launch " + 
+            "main_VO from the same interactive GPU session where nvidia-smi works.");
     }
     if (device_id < 0 || device_id >= n_cuda_devices) {
         throw std::runtime_error(
@@ -196,19 +276,26 @@ void Stereo_Matches_GPU_Pipeline::release_image_textures()
     b_image_textures_ready_ = false;
 }
 
-void Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU() {
+void Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU(size_t frame_idx) {
 
     //> Timer holders
     GPU_Timing_Statistics GPU_time_collection;
+    GPU_time_collection.total_time = 0.0;
 
     //> For each edge on the right, construct the spatial grid mapping (result is stored in d_cell_ids)
     GPU_time_collection.time_spatial_grid_mapping = build_edge_spatial_map();
+    GPU_time_collection.total_time += GPU_time_collection.time_spatial_grid_mapping;
     #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
     test_spatial_grid_mapping();
     #endif
 
     //> Do epipolar line rasterization to find right candidate edges that pass EP, LP, and OR filters
     GPU_time_collection.time_epipolar_rasterization = rasterize_epipolar_band_for_matches();
+    GPU_time_collection.total_time += GPU_time_collection.time_epipolar_rasterization;
+    #if WRITE_GPU_STEREO_STAGE_SNAPSHOTS
+    write_gpu_stage_match_by_edge_index_file(device_id, dataset_, h_left_edges, num_left_edges_, h_right_edges, num_right_edges_,
+                                           d_final_matches_passing_EP_LP_OR_filters, d_match_count_passing_EP_LP_OR_filters, "ep_lp_or", frame_idx);
+    #endif
     #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
     test_epipolar_rasterization();
     test_EP_LP_OR_vs_stereo_matches_cpu();
@@ -216,39 +303,80 @@ void Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU() {
 
     //> Precompute the left edge patches photometry
     GPU_time_collection.time_precompute_left_edge_patches_photometry = precompute_left_edge_patches_photometry();
+    GPU_time_collection.total_time += GPU_time_collection.time_precompute_left_edge_patches_photometry;
 
     //> Apply NCC filter
     GPU_time_collection.time_apply_NCC_filter = apply_NCC_filter();
-    std::cout << "Number of matches passing NCC filter: " << h_match_count_passing_NCC_filter << std::endl;
+    GPU_time_collection.total_time += GPU_time_collection.time_apply_NCC_filter;
+    // std::cout << "Number of matches passing NCC filter: " << h_match_count_passing_NCC_filter << std::endl;
+    #if WRITE_GPU_STEREO_STAGE_SNAPSHOTS
+    write_gpu_stage_match_by_edge_index_file(device_id, dataset_, h_left_edges, num_left_edges_, h_right_edges, num_right_edges_,
+                                           d_final_matches_passing_NCC_filter, d_final_count_passing_NCC_filter, "ncc", frame_idx);
+    #endif
     #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
     test_ncc_filter();
     #endif
 
     //> Apply GPU-only SIFT-style descriptor filter
     GPU_time_collection.time_apply_SIFT_descriptor_filter = apply_SIFT_descriptor_filter();
-    std::cout << "Number of matches passing GPU SIFT descriptor filter: " << h_match_count_passing_SIFT_filter << std::endl;
+    GPU_time_collection.total_time += GPU_time_collection.time_apply_SIFT_descriptor_filter;
+    // std::cout << "Number of matches passing GPU SIFT descriptor filter: " << h_match_count_passing_SIFT_filter << std::endl;
+    #if WRITE_GPU_STEREO_STAGE_SNAPSHOTS
+    write_gpu_stage_match_by_edge_index_file(device_id, dataset_, h_left_edges, num_left_edges_, h_right_edges, num_right_edges_,
+                                           d_final_matches_passing_SIFT_filter, d_final_count_passing_SIFT_filter, "sift", frame_idx);
+    #endif
     #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
     test_SIFT_descriptor_filter();
     #endif
 
     //> Apply Best-Nearly-Best in GPU for NCC and SIFT scores.
     GPU_time_collection.time_apply_BNB_NCC_filter = apply_BNB_NCC_filter();
-    std::cout << "Number of matches passing GPU BNB-NCC filter: " << h_match_count_passing_BNB_NCC_filter << std::endl;
-    GPU_time_collection.time_apply_BNB_SIFT_filter = apply_BNB_SIFT_filter();
-    std::cout << "Number of matches passing GPU BNB-SIFT filter: " << h_match_count_passing_BNB_SIFT_filter << std::endl;
+    GPU_time_collection.total_time += GPU_time_collection.time_apply_BNB_NCC_filter;
+    // std::cout << "Number of matches passing GPU BNB-NCC filter: " << h_match_count_passing_BNB_NCC_filter << std::endl;
+    #if WRITE_GPU_STEREO_STAGE_SNAPSHOTS
+    write_gpu_stage_match_by_edge_index_file(device_id, dataset_, h_left_edges, num_left_edges_, h_right_edges, num_right_edges_,
+                                           d_final_matches_passing_BNB_NCC_filter, d_final_count_passing_BNB_NCC_filter, "bnb_ncc", frame_idx);
+    #endif
 
-    //> Shift edhe pair hypothesis onto the epipolar line and refine the edge location by minimizing the photometric residual, with consolidation as the final step
+    GPU_time_collection.time_apply_BNB_SIFT_filter = apply_BNB_SIFT_filter();
+    GPU_time_collection.total_time += GPU_time_collection.time_apply_BNB_SIFT_filter;
+    // std::cout << "Number of matches passing GPU BNB-SIFT filter: " << h_match_count_passing_BNB_SIFT_filter << std::endl;
+    #if WRITE_GPU_STEREO_STAGE_SNAPSHOTS
+    write_gpu_stage_match_by_edge_index_file(device_id, dataset_, h_left_edges, num_left_edges_, h_right_edges, num_right_edges_,
+                                           d_final_matches_passing_BNB_SIFT_filter, d_final_count_passing_BNB_SIFT_filter, "bnb_sift", frame_idx);
+    #endif
+
+    //> Shift edge pair hypothesis onto the epipolar line and refine the edge location by minimizing the photometric residual, with consolidation as the final step
     GPU_time_collection.time_apply_epipolar_shift_photometric_refine_and_merge = apply_epipolar_shift_photometric_refine_and_merge();
-    std::cout << "Number of matches after GPU shift + refine + merge: " << h_match_count_merged_after_refine << std::endl;
+    GPU_time_collection.total_time += GPU_time_collection.time_apply_epipolar_shift_photometric_refine_and_merge;
+    // std::cout << "Number of matches after GPU shift + refine + merge: " << h_match_count_merged_after_refine << std::endl;
 
     //> Apply the second NCC filter
     GPU_time_collection.time_apply_second_NCC_filter = apply_second_NCC_filter();
-    std::cout << "Number of matches passing the second NCC filter: " << h_match_count_passing_NCC_filter << std::endl;
+    GPU_time_collection.total_time += GPU_time_collection.time_apply_second_NCC_filter;
+    // std::cout << "Number of matches passing the second NCC filter: " << h_match_count_passing_NCC_filter << std::endl;
 
     //> One merged hypothesis per left edge: keep the candidate with the highest second-NCC score
     GPU_time_collection.time_apply_best_second_ncc_per_left = apply_best_second_ncc_per_left_after_second_NCC();
-    std::cout << "Number of matches after best second-NCC per left (one-to-one): " << h_match_count_passing_NCC_filter << std::endl;
+    GPU_time_collection.total_time += GPU_time_collection.time_apply_best_second_ncc_per_left;
+    // std::cout << "Number of matches after best second-NCC per left (one-to-one): " << h_match_count_passing_NCC_filter << std::endl;
 
+#if SHOW_TIMING_BREAKDOWN
+    //> set the same digits for the timeing breakdown when printing
+    std::cout.precision(3);
+    std::cout << "Timing breakdown of stereo edge matching: " << std::endl;
+    std::cout << " - spatial grid mapping: " << GPU_time_collection.time_spatial_grid_mapping << " (ms)" << std::endl;
+    std::cout << " - epipolar rasterization: " << GPU_time_collection.time_epipolar_rasterization << " (ms)" << std::endl;
+    std::cout << " - precompute left edge patches photometry: " << GPU_time_collection.time_precompute_left_edge_patches_photometry << " (ms)" << std::endl;
+    std::cout << " - NCC filter: " << GPU_time_collection.time_apply_NCC_filter << " (ms)" << std::endl;
+    std::cout << " - SIFT descriptor filter: " << GPU_time_collection.time_apply_SIFT_descriptor_filter << " (ms)" << std::endl;
+    std::cout << " - BNB NCC filter: " << GPU_time_collection.time_apply_BNB_NCC_filter << " (ms)" << std::endl;
+    std::cout << " - BNB SIFT filter: " << GPU_time_collection.time_apply_BNB_SIFT_filter << " (ms)" << std::endl;
+    std::cout << " - Epipolar shift + refine + merge: " << GPU_time_collection.time_apply_epipolar_shift_photometric_refine_and_merge << " (ms)" << std::endl;
+    std::cout << " - Second NCC filter: " << GPU_time_collection.time_apply_second_NCC_filter << " (ms)" << std::endl;
+    std::cout << " - Best second-NCC per left: " << GPU_time_collection.time_apply_best_second_ncc_per_left << " (ms)" << std::endl;
+#endif
+    LOG_INFO("Total time of GPU stereo edge matching: " + std::to_string(GPU_time_collection.total_time) + " (ms)");
 }
 
 float Stereo_Matches_GPU_Pipeline::build_edge_spatial_map() {
@@ -595,89 +723,25 @@ void Stereo_Matches_GPU_Pipeline::test_SIFT_descriptor_filter() const {
     Stereo_Matches_GPU_Validator::test_SIFT_descriptor_filter(make_test_context());
 }
 
-void Stereo_Matches_GPU_Pipeline::write_sift_matches_to_file(size_t frame_idx) const
-{
-    const Match_by_Edge_Index* d_matches_to_write =
-        (d_final_matches_passing_BNB_SIFT_filter != nullptr) ? d_final_matches_passing_BNB_SIFT_filter : d_final_matches_passing_SIFT_filter;
-    const int* d_count_to_write =
-        (d_final_count_passing_BNB_SIFT_filter != nullptr) ? d_final_count_passing_BNB_SIFT_filter : d_final_count_passing_SIFT_filter;
-
-    if (d_matches_to_write == nullptr || d_count_to_write == nullptr) {
-        LOG_WARNING("write_sift_matches_to_file: GPU SIFT/BNB outputs not allocated; skipping");
-        return;
-    }
-    int sift_count = 0;
-    cudaError_t err = cudaMemcpy(&sift_count, d_count_to_write, sizeof(int), cudaMemcpyDeviceToHost);
-    if (err != cudaSuccess) {
-        LOG_ERROR(std::string("write_sift_matches_to_file: cudaMemcpy d_final_count_passing_SIFT_filter failed: ") + cudaGetErrorString(err));
-        return;
-    }
-    if (sift_count < 0) {
-        LOG_ERROR("write_sift_matches_to_file: invalid negative SIFT match count from device");
-        return;
-    }
-
-    std::vector<Match_by_Edge_Index> sift_matches(static_cast<size_t>(sift_count));
-    if (sift_count > 0) {
-        err = cudaMemcpy(sift_matches.data(), d_matches_to_write,
-                         static_cast<size_t>(sift_count) * sizeof(Match_by_Edge_Index),
-                         cudaMemcpyDeviceToHost);
-        if (err != cudaSuccess) {
-            LOG_ERROR(std::string("write_sift_matches_to_file: cudaMemcpy d_final_matches_passing_SIFT_filter failed: ") + cudaGetErrorString(err));
-            return;
-        }
-    }
-
-    const std::string output_dir = (dataset_ != nullptr) ? dataset_->get_output_path() : std::string("output_files");
-    const std::string filename = output_dir + "/gpu_sift_matches_frame_" + std::to_string(frame_idx) + ".txt";
-    std::ofstream outfile(filename);
-    if (!outfile.is_open()) {
-        LOG_ERROR("write_sift_matches_to_file: cannot open output file " + filename);
-        return;
-    }
-    outfile << "left_idx left_x left_y left_orientation right_idx right_x right_y right_orientation\n";
-    outfile.precision(8);
-
-    size_t skipped_invalid = 0;
-    for (const auto& m : sift_matches) {
-        if (m.left_edge_idx < 0 || static_cast<size_t>(m.left_edge_idx) >= num_left_edges_ ||
-            m.right_edge_idx < 0 || static_cast<size_t>(m.right_edge_idx) >= num_right_edges_) {
-            ++skipped_invalid;
-            continue;
-        }
-        const Edge_GPU& le = h_left_edges[m.left_edge_idx];
-        const Edge_GPU& re = h_right_edges[m.right_edge_idx];
-        outfile << m.left_edge_idx  << " " << le.location_x << " " << le.location_y << " " << le.orientation << " "
-                << m.right_edge_idx << " " << re.location_x << " " << re.location_y << " " << re.orientation << "\n";
-    }
-    outfile.close();
-
-    std::cout << "Wrote " << (sift_matches.size() - skipped_invalid) << " GPU SIFT matches to "
-              << filename;
-    if (skipped_invalid > 0)
-        std::cout << " (skipped " << skipped_invalid << " out-of-range entries)";
-    std::cout << std::endl;
-}
-
-void Stereo_Matches_GPU_Pipeline::write_refined_merged_matches_to_file(size_t frame_idx) const
+void Stereo_Matches_GPU_Pipeline::write_finalized_matches_to_file(size_t frame_idx) const
 {
     if (d_merged_refined_matches == nullptr || d_merged_refined_count == nullptr) {
-        LOG_WARNING("write_refined_merged_matches_to_file: refined/merge outputs not allocated; skipping");
+        LOG_WARNING("write_finalized_matches_to_file: refined/merge outputs not allocated; skipping");
         return;
     }
 
     int n = 0;
     cudaError_t err = cudaMemcpy(&n, d_merged_refined_count, sizeof(int), cudaMemcpyDeviceToHost);
     if (err != cudaSuccess) {
-        LOG_ERROR(std::string("write_refined_merged_matches_to_file: cudaMemcpy count failed: ") + cudaGetErrorString(err));
+        LOG_ERROR(std::string("write_finalized_matches_to_file: cudaMemcpy count failed: ") + cudaGetErrorString(err));
         return;
     }
     if (n < 0) {
-        LOG_ERROR("write_refined_merged_matches_to_file: invalid negative merged count");
+        LOG_ERROR("write_finalized_matches_to_file: invalid negative merged count");
         return;
     }
     if (n == 0) {
-        LOG_WARNING("write_refined_merged_matches_to_file: zero merged matches; skipping file write");
+        LOG_WARNING("write_finalized_matches_to_file: zero merged matches; skipping file write");
         return;
     }
 
@@ -685,33 +749,27 @@ void Stereo_Matches_GPU_Pipeline::write_refined_merged_matches_to_file(size_t fr
     err = cudaMemcpy(rows.data(), d_merged_refined_matches, static_cast<size_t>(n) * sizeof(Merged_Refined_Stereo_Match_GPU),
                      cudaMemcpyDeviceToHost);
     if (err != cudaSuccess) {
-        LOG_ERROR(std::string("write_refined_merged_matches_to_file: cudaMemcpy merged rows failed: ") + cudaGetErrorString(err));
+        LOG_ERROR(std::string("write_finalized_matches_to_file: cudaMemcpy merged rows failed: ") + cudaGetErrorString(err));
         return;
     }
 
     const std::string output_dir = (dataset_ != nullptr) ? dataset_->get_output_path() : std::string("output_files");
-    const std::string filename = output_dir + "/gpu_refined_merged_matches_frame_" + std::to_string(frame_idx) + ".txt";
+    const std::string filename = output_dir + "/gpu_finalized_stereo_edge_pairs_frame_" + std::to_string(frame_idx) + ".txt";
     std::ofstream outfile(filename);
     if (!outfile.is_open()) {
-        LOG_ERROR("write_refined_merged_matches_to_file: cannot open " + filename);
+        LOG_ERROR("write_finalized_matches_to_file: cannot open " + filename);
         return;
     }
-    outfile << "left_idx left_x left_y left_orientation merged_right_x merged_right_y merged_right_orientation\n";
+    outfile << "left_x left_y left_orientation merged_right_x merged_right_y merged_right_orientation\n";
     outfile.precision(8);
 
-    size_t skipped = 0;
     for (int i = 0; i < n; ++i) {
         const Merged_Refined_Stereo_Match_GPU& row = rows[static_cast<size_t>(i)];
-        if (row.left_edge_idx < 0 || static_cast<size_t>(row.left_edge_idx) >= num_left_edges_) {
-            ++skipped;
-            continue;
-        }
         const Edge_GPU& le = h_left_edges[row.left_edge_idx];
-        outfile << row.left_edge_idx << " " << le.location_x << " " << le.location_y << " " << le.orientation << " "
-                << row.merged_right_x << " " << row.merged_right_y << " " << row.merged_right_orientation << "\n";
+        outfile << le.location_x << " " << le.location_y << " " << le.orientation << " " << row.merged_right_x << " " << row.merged_right_y << " " << row.merged_right_orientation << "\n";
     }
     outfile.close();
-    std::cout << "Wrote " << (static_cast<size_t>(n) - skipped) << " GPU refined merged matches to " << filename << std::endl;
+    std::cout << "Wrote " << static_cast<size_t>(n) << " GPU finalized stereo edge pairs to " << filename << std::endl;
 }
 
 Stereo_Matches_GPU_Pipeline::~Stereo_Matches_GPU_Pipeline()

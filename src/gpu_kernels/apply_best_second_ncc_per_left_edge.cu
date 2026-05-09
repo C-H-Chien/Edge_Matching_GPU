@@ -89,6 +89,9 @@ float apply_best_second_ncc_per_left_edge_pipeline(
         return 0.0f;
     }
 
+    //> Start the CUDA event timer
+    cudacheck(cudaEventRecord(start));
+
     //> Each sort row of d_sort_rows is a candidate match, represented as [left_edge_index, -NCC_score, candidate_match_index]
     SortRow* d_sort_rows = nullptr;
     cudacheck(cudaMalloc(&d_sort_rows, static_cast<size_t>(num_candidates) * sizeof(SortRow)));
@@ -106,9 +109,6 @@ float apply_best_second_ncc_per_left_edge_pipeline(
                                       ? NUM_OF_THREADBLOCKS_SPATIAL_GRID_MAPPING
                                       : max_threads_per_block;
     const int num_blocks = (num_candidates + threads_per_block - 1) / threads_per_block;
-
-    //> Start the CUDA event timer
-    cudacheck(cudaEventRecord(start));
 
     //> The first kernel is to fill the sort rows (d_sort_rows) for the best second-NCC per left edge
     //> This assigns one thread "per candidate match"
@@ -128,9 +128,7 @@ float apply_best_second_ncc_per_left_edge_pipeline(
     cudacheck(cudaEventRecord(stop));
     cudacheck(cudaEventSynchronize(stop));
     cudacheck(cudaEventElapsedTime(&elapsed_ms, start, stop));
-
-    LOG_INFO("Time for best second-NCC per left edge (one-to-one): " + std::to_string(elapsed_ms) + " milliseconds");
-
+    
     h_match_count_out = 0;
     cudacheck(cudaMemcpy(&h_match_count_out, d_compact_count, sizeof(int), cudaMemcpyDeviceToHost));
 
