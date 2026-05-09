@@ -27,6 +27,7 @@ struct GPU_Timing_Statistics
     float time_apply_BNB_SIFT_filter;
     float time_apply_epipolar_shift_photometric_refine_and_merge;
     float time_apply_second_NCC_filter;
+    float time_apply_best_second_ncc_per_left;
     float total_time;
 };
 
@@ -50,6 +51,7 @@ public:
     float apply_BNB_SIFT_filter();
     float apply_epipolar_shift_photometric_refine_and_merge();
     float apply_second_NCC_filter();
+    float apply_best_second_ncc_per_left_after_second_NCC();
 
     //> Writes the GPU SIFT-passing matches for the current frame to
     //> `<dataset_output_path>/gpu_sift_matches_frame_<frame_idx>.txt` as

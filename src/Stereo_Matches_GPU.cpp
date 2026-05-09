@@ -245,6 +245,10 @@ void Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU() {
     GPU_time_collection.time_apply_second_NCC_filter = apply_second_NCC_filter();
     std::cout << "Number of matches passing the second NCC filter: " << h_match_count_passing_NCC_filter << std::endl;
 
+    //> One merged hypothesis per left edge: keep the candidate with the highest second-NCC score
+    GPU_time_collection.time_apply_best_second_ncc_per_left = apply_best_second_ncc_per_left_after_second_NCC();
+    std::cout << "Number of matches after best second-NCC per left (one-to-one): " << h_match_count_passing_NCC_filter << std::endl;
+
 }
 
 float Stereo_Matches_GPU_Pipeline::build_edge_spatial_map() {
@@ -496,7 +500,7 @@ float Stereo_Matches_GPU_Pipeline::apply_second_NCC_filter() {
     d_merged_refined_matches = nullptr;
     d_merged_refined_count = nullptr;
 
-    return apply_second_NCC_filter_on_merged_edges_pipeline(
+    const float elapsed = apply_second_NCC_filter_on_merged_edges_pipeline(
         device_id,
         h_match_count_passing_NCC_filter,
         right_image_texture_.texObj,
@@ -506,6 +510,38 @@ float Stereo_Matches_GPU_Pipeline::apply_second_NCC_filter() {
         d_merged_refined_matches,
         d_merged_refined_count,
         d_ncc_scores_passing_second_NCC_filter,
+        start,
+        stop
+    );
+
+    if (d_prev_merged_matches != nullptr) {
+        cudacheck(cudaFree(d_prev_merged_matches));
+        d_prev_merged_matches = nullptr;
+    }
+    if (d_prev_merged_count != nullptr) {
+        cudacheck(cudaFree(d_prev_merged_count));
+        d_prev_merged_count = nullptr;
+    }
+
+    return elapsed;
+}
+
+float Stereo_Matches_GPU_Pipeline::apply_best_second_ncc_per_left_after_second_NCC()
+{
+    const int n = h_match_count_passing_NCC_filter;
+    if (n <= 0 || d_merged_refined_matches == nullptr || d_merged_refined_count == nullptr
+        || d_ncc_scores_passing_second_NCC_filter == nullptr) {
+        LOG_ERROR("apply_best_second_ncc_per_left_after_second_NCC: invalid inputs or zero second-NCC matches");
+        return 0.0f;
+    }
+
+    return apply_best_second_ncc_per_left_edge_pipeline(
+        device_id,
+        h_match_count_passing_NCC_filter,
+        d_merged_refined_matches,
+        d_merged_refined_count,
+        d_ncc_scores_passing_second_NCC_filter,
+        n,
         start,
         stop
     );

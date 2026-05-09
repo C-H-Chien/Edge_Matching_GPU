@@ -239,7 +239,7 @@ float combined_edge_epipolar_shift_and_refine_and_merge_pipeline(
     cudaEvent_t                                 stop
 );
 
-//> Apply NCC directly on merged refined right hypotheses (defined in apply_NCC_on_the_fly.cu)
+//> Apply NCC directly on merged refined right hypotheses (defined in apply_second_NCC_filter.cu)
 float apply_second_NCC_filter_on_merged_edges_pipeline(
     int                         device_id,
     int                         &h_NCC_match_count_out,
@@ -250,6 +250,18 @@ float apply_second_NCC_filter_on_merged_edges_pipeline(
     Merged_Refined_Stereo_Match_GPU* &d_merged_matches_out,
     int*                        &d_merged_count_out,
     float*                      &d_ncc_scores_out,
+    cudaEvent_t                 start,
+    cudaEvent_t                 stop
+);
+
+//> Best filter: one merged hypothesis per left edge with highest second-NCC score
+float apply_best_second_ncc_per_left_edge_pipeline(
+    int                         device_id,
+    int                         &h_match_count_out,
+    Merged_Refined_Stereo_Match_GPU*& d_merged_matches,
+    int*&                       d_merged_count,
+    float*&                     d_second_ncc_scores,
+    int                         num_candidates,
     cudaEvent_t                 start,
     cudaEvent_t                 stop
 );
