@@ -120,12 +120,16 @@ void Pipeline::prepare_Stereo_Images()
 
 void Pipeline::get_Stereo_Edge_Correspondences()
 {
+    //> Reset before allocate: frees the previous frame's GPU pipeline before this frame's cudaMalloc traffic (avoids a brief 2x VRAM spike).
+    //> Reset after file write below: release GPU immediately; nothing else uses stereo_matches_engine_GPU until the next stereo pass.
+    stereo_matches_engine_GPU.reset();
     stereo_matches_engine_GPU = std::make_shared<Stereo_Matches_GPU_Pipeline>(dataset_, current_frame, DEVICE_ID);
     stereo_matches_engine_GPU->get_stereo_edge_matching_GPU(stereo_current_frame_idx);
 
     //> output the results to files
     stereo_matches_engine_GPU->write_finalized_matches_to_file(stereo_current_frame_idx);
-    
+    stereo_matches_engine_GPU.reset();
+
     // //> Set the stereo left constructor
     // set_Stereo_Left_Constructor();
     // Timing_Statistics stereo_timing_statistics;
