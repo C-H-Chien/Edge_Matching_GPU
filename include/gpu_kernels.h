@@ -177,7 +177,8 @@ float apply_SIFT_descriptor_filter_pipeline(
     int                         right_img_height,
     int                         num_ncc_matches,
     cudaEvent_t                 start,
-    cudaEvent_t                 stop
+    cudaEvent_t                 stop,
+    float                       sift_threshold
 );
 
 //> GPU kernel pipeline for apply NCC filter (defined in apply_NCC_on_the_fly.cu)
@@ -197,7 +198,8 @@ float apply_NCC_filter_pipeline(
     /* Others */
     int                         num_candidates,
     cudaEvent_t                 start,
-    cudaEvent_t                 stop
+    cudaEvent_t                 stop,
+    float                       ncc_threshold
 );
 
 //> GPU kernel pipeline for Best-Nearly-Best filtering (defined in apply_best_nearly_best_filter.cu)
@@ -250,6 +252,33 @@ float apply_second_NCC_filter_on_merged_edges_pipeline(
     Merged_Refined_Stereo_Match_GPU* &d_merged_matches_out,
     int*                        &d_merged_count_out,
     float*                      &d_ncc_scores_out,
+    cudaEvent_t                 start,
+    cudaEvent_t                 stop
+);
+
+//> Temporal quad candidate generation: for each KF stereo mate, queries the CF-left spatial grid
+//> within TEMPORAL_SEARCH_RADIUS_PIXELS and checks whether the CF-right mate is also within radius.
+//> Orientation filter (TEMPORAL_ORIENTATION_THRESH_DEG) is applied on both sides.
+//> Emits Match_by_Edge_Index { left_edge_idx = kf_mate_idx, right_edge_idx = cf_mate_idx }.
+//> (defined in temporal_candidate_generation.cu)
+float temporal_candidate_generation_pipeline(
+    int                         device_id,
+    const Edge_GPU*             d_kf_left_edges,
+    const Edge_GPU*             d_kf_right_edges,
+    int                         num_kf_mates,
+    const Edge_GPU*             d_cf_left_edges,
+    const Edge_GPU*             d_cf_right_edges,
+    const int*                  d_cf_left_edge_indices,
+    const int*                  d_cf_left_cell_start_idx,
+    const int*                  d_cf_left_num_in_cell,
+    int                         grid_W,
+    int                         grid_H,
+    float                       search_radius,
+    float                       orient_thresh_deg,
+    Match_by_Edge_Index*        d_candidates,
+    int*                        d_candidate_count,
+    int&                        h_candidate_count_out,
+    int                         max_candidates,
     cudaEvent_t                 start,
     cudaEvent_t                 stop
 );

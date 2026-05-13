@@ -93,6 +93,8 @@ public:
         LOG_INFO("Saved poses to KITTI format file: " + file_name + ".txt");
         file.close();
     }
+
+    
 };
 
 //> Write evaluation statistics to file, specifically the data from photometric refinement

@@ -132,7 +132,8 @@ void apply_SIFT_descriptor_filter_kernel(
     int left_height,
     int right_width,
     int right_height,
-    int num_ncc_matches)
+    int num_ncc_matches,
+    float sift_threshold)
 {
     const int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_ncc_matches)
@@ -172,7 +173,7 @@ void apply_SIFT_descriptor_filter_kernel(
     const float d_nn = l2_distance(l_minus, r_minus);
     const float min_dist = fminf(fminf(d_pp, d_pn), fminf(d_np, d_nn));
 
-    if (min_dist < static_cast<float>(SIFT_THRESHOLD)) {
+    if (min_dist < sift_threshold) {
         const int out_idx = atomicAdd(d_final_count, 1);
         d_final_matches[out_idx] = candidate;
         d_final_scores[out_idx] = min_dist;
@@ -193,7 +194,8 @@ void apply_SIFT_descriptor_filter_kernel_launcher(
     int left_height,
     int right_width,
     int right_height,
-    int num_ncc_matches)
+    int num_ncc_matches,
+    float sift_threshold)
 {
     int max_threads_per_block = 1024;
     cudacheck(cudaDeviceGetAttribute(&max_threads_per_block, cudaDevAttrMaxThreadsPerBlock, device_id));
@@ -218,7 +220,8 @@ void apply_SIFT_descriptor_filter_kernel_launcher(
         reinterpret_cast<void*>(&left_height),
         reinterpret_cast<void*>(&right_width),
         reinterpret_cast<void*>(&right_height),
-        reinterpret_cast<void*>(&num_ncc_matches)
+        reinterpret_cast<void*>(&num_ncc_matches),
+        reinterpret_cast<void*>(&sift_threshold)
     };
 
     cudacheck(cudaLaunchKernel(reinterpret_cast<const void*>(apply_SIFT_descriptor_filter_kernel), grid_dim, block_dim, kernel_args, 0, nullptr));
@@ -244,7 +247,8 @@ float apply_SIFT_descriptor_filter_pipeline(
     int                         right_img_height,
     int                         num_ncc_matches,
     cudaEvent_t                 start,
-    cudaEvent_t                 stop)
+    cudaEvent_t                 stop,
+    float                       sift_threshold)
 {
     cudacheck(cudaSetDevice(device_id));
 
@@ -262,7 +266,7 @@ float apply_SIFT_descriptor_filter_pipeline(
     //> Launch the SIFT descriptor filter kernel
     apply_SIFT_descriptor_filter_kernel_launcher( device_id, d_ncc_matches, d_left_edges, d_right_edges, d_final_matches_passing_SIFT_filter,
                                                   d_final_count_passing_SIFT_filter, d_sift_scores_out, left_tex, right_tex, left_img_width, left_img_height,
-                                                  right_img_width, right_img_height, num_ncc_matches );
+                                                  right_img_width, right_img_height, num_ncc_matches, sift_threshold );
     cudacheck(cudaDeviceSynchronize());
 
     //> End the CUDA event timer for SIFT descriptor filter

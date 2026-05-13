@@ -12,6 +12,15 @@
 #define GRID_CELL_SIZE (16)
 #define FACTOR_OF_NUM_OF_LEFT_EDGES_FOR_STEREO_EDGE_MATCHES_AFTER_EPIPOLAR_RASTERIZATION (100)
 
+//> Temporal GPU pipeline constants
+//> Max candidate buffer = num_kf_mates * this factor (spatial-grid intersection can yield many candidates)
+#define FACTOR_OF_NUM_OF_KF_MATES_FOR_TEMPORAL_CANDIDATES (200)
+//> Search radius (pixels) used when querying the CF spatial grid for each KF stereo mate
+#define TEMPORAL_SEARCH_RADIUS_PIXELS (16.0f)
+//> Orientation-difference threshold (degrees) applied in the candidate generation kernel
+#define TEMPORAL_ORIENTATION_THRESH_DEG (10.0f)
+#define WRITE_GPU_TEMPORAL_STAGE_SNAPSHOTS (false)
+
 //> Macros related to NCC filter (must mirror Utility::get_patch_on_one_edge_side + get_Orthogonal_Shifted_Points)
 //> PATCH_RADIUS: half-width in pixels; CPU loops i,j in [-half..half] with half = floor(PATCH_SIZE/2) == PATCH_SIZE/2 for odd PATCH_SIZE
 #define PATCH_RADIUS                    (PATCH_SIZE / 2)
@@ -32,6 +41,12 @@
 #define GPU_EP_REFINE_TOL (1e-3f)
 #define GPU_EP_REFINE_HUBER_DELTA (3.0f)
 #define GPU_MERGE_MAX_SEGMENT_SIZE (384)
+
+//> Temporal edge matching GPU settings
+#define NCC_THRESH_TEMPORAL     (0.8)
+#define SIFT_THRESH_TEMPORAL    (200.0)
+#define BNB_SIFT_TEMPORAL       (0.8)
+#define BNB_NCC_TEMPORAL        (0.9)
 
 //> CUDA error check
 #define cudacheck( a )  do { \

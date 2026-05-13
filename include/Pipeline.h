@@ -18,6 +18,7 @@
 #include "Stereo_Matches.h"
 #include "Temporal_Matches.h"
 #include "Stereo_Matches_GPU.h"
+#include "Temporal_Matches_GPU.h"
 
 //> status of the visual odometry pipeline
 enum class PipelineStatus
@@ -86,6 +87,9 @@ public:
 
     //> system exit message
     std::string system_exit_message;
+
+    std::vector<Stereo_Matches_GPU_Timing_Statistics>   collect_stereo_GPU_times;
+    std::vector<Temporal_Matches_GPU_Timing_Statistics> collect_temporal_GPU_times;
 
     //> for debugging purpose
     bool b_end_pipeline_for_debug = false;
@@ -216,6 +220,7 @@ private:
     Temporal_Matches::Ptr temporal_matches_engine = nullptr;
     Utility::Ptr utility_tool = nullptr;
     Stereo_Matches_GPU_Pipeline::Ptr stereo_matches_engine_GPU = nullptr;
+    Temporal_Matches_GPU_Pipeline::Ptr temporal_matches_engine_GPU = nullptr;
 
     //> file stream for writing timing statistics
     std::ofstream timing_statistics_file;

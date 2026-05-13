@@ -9,6 +9,7 @@ set (control_sources
         EdgeClusterer.cpp
 
         Stereo_Matches_GPU.cpp
+        Temporal_Matches_GPU.cpp
         Stereo_Matches_GPU_Validator.cpp
 )
 
@@ -23,6 +24,7 @@ if(ENABLE_CUDA)
         gpu_kernels/combined_edge_epipolar_shift_and_refine_and_merge_pipeline.cu
         gpu_kernels/apply_second_NCC_filter.cu
         gpu_kernels/apply_best_second_ncc_per_left_edge.cu
+        gpu_kernels/temporal_candidate_generation.cu
     )
 endif()
 

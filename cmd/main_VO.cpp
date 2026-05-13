@@ -134,5 +134,39 @@ int main(int argc, char **argv)
 		}
 	}
 
+	//> Write all the stereo GPU timings to a file
+	std::string output_dir = dataset_->get_output_path();
+	std::string gpu_timings_filename = output_dir + "/gpu_timings_stereo_matches.txt";
+	std::ofstream gpu_timings_file(gpu_timings_filename);
+	for (size_t i = 0; i < quad_vo_sys->collect_stereo_GPU_times.size(); i++) {
+		gpu_timings_file << quad_vo_sys->collect_stereo_GPU_times[i].time_spatial_grid_mapping << " " 
+		<< quad_vo_sys->collect_stereo_GPU_times[i].time_epipolar_rasterization << " " 
+		<< quad_vo_sys->collect_stereo_GPU_times[i].time_precompute_left_edge_patches_photometry << " " 
+		<< quad_vo_sys->collect_stereo_GPU_times[i].time_apply_NCC_filter << " " 
+		<< quad_vo_sys->collect_stereo_GPU_times[i].time_apply_SIFT_descriptor_filter << " " 
+		<< quad_vo_sys->collect_stereo_GPU_times[i].time_apply_BNB_NCC_filter << " " 
+		<< quad_vo_sys->collect_stereo_GPU_times[i].time_apply_BNB_SIFT_filter << " " 
+		<< quad_vo_sys->collect_stereo_GPU_times[i].time_apply_epipolar_shift_photometric_refine_and_merge << " " 
+		<< quad_vo_sys->collect_stereo_GPU_times[i].time_apply_second_NCC_filter << " " 
+		<< quad_vo_sys->collect_stereo_GPU_times[i].time_apply_best_second_ncc_per_left << " " 
+		<< quad_vo_sys->collect_stereo_GPU_times[i].total_time << std::endl;
+	}
+	gpu_timings_file.close();
+
+	//> Write all the temporal GPU timings to a file
+	std::string temporal_gpu_timings_filename = output_dir + "/gpu_timings_temporal_matches.txt";
+	std::ofstream temporal_gpu_timings_file(temporal_gpu_timings_filename);
+	for (size_t i = 0; i < quad_vo_sys->collect_temporal_GPU_times.size(); i++) {
+		temporal_gpu_timings_file << quad_vo_sys->collect_temporal_GPU_times[i].time_build_cf_left_spatial_grid << " " 
+		<< quad_vo_sys->collect_temporal_GPU_times[i].time_precompute_kf_left_patches + quad_vo_sys->collect_temporal_GPU_times[i].time_precompute_kf_right_patches << " " 
+		<< quad_vo_sys->collect_temporal_GPU_times[i].time_temporal_candidate_generation << " " 
+		<< quad_vo_sys->collect_temporal_GPU_times[i].time_apply_ncc_left_filter + quad_vo_sys->collect_temporal_GPU_times[i].time_apply_ncc_right_filter << " " 
+		<< quad_vo_sys->collect_temporal_GPU_times[i].time_apply_sift_left_filter + quad_vo_sys->collect_temporal_GPU_times[i].time_apply_sift_right_filter << " " 
+		<< quad_vo_sys->collect_temporal_GPU_times[i].time_apply_bnb_ncc_filter << " " 
+		<< quad_vo_sys->collect_temporal_GPU_times[i].time_apply_bnb_sift_filter << " " 
+		<< quad_vo_sys->collect_temporal_GPU_times[i].total_time << std::endl;
+	}
+	temporal_gpu_timings_file.close();
+
 	return 0;
 }

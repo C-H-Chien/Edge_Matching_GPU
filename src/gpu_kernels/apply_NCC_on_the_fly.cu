@@ -29,7 +29,8 @@ __global__ void apply_NCC_filter_kernel(
     /* Data live in the CUDA texture memory */
     cudaTextureObject_t right_tex,
     /* Others */
-    int num_candidates)
+    int num_candidates,
+    float ncc_threshold)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_candidates) return;
@@ -65,8 +66,7 @@ __global__ void apply_NCC_filter_kernel(
     //> Take the maximum of the four possible combinations
     float max_ncc = fmaxf(fmaxf(sim_pp, sim_pn), fmaxf(sim_np, sim_nn));
 
-    //> Mirror Stereo_Matches::apply_NCC_Filtering: `if (final_SIM_score > NCC_THRESH)`
-    if (max_ncc > static_cast<float>(NCC_THRESH)) {
+    if (max_ncc > ncc_threshold) {
         int out_idx = atomicAdd(d_final_count, 1);
         d_final_matches[out_idx] = candidate;
         d_final_scores[out_idx] = max_ncc;
@@ -83,7 +83,8 @@ void apply_NCC_filter_kernel_launcher(
     float* d_final_scores,
     Precomputed_Edge_Patches_Photometry* d_left_patches,
     cudaTextureObject_t right_tex,
-    int num_candidates)
+    int num_candidates,
+    float ncc_threshold)
 {
     int max_threads_per_block = 1024;
     cudacheck(cudaDeviceGetAttribute(&max_threads_per_block, cudaDevAttrMaxThreadsPerBlock, device_id));
@@ -105,7 +106,8 @@ void apply_NCC_filter_kernel_launcher(
         reinterpret_cast<void*>(&d_final_scores),
         reinterpret_cast<void*>(&d_left_patches),
         reinterpret_cast<void*>(&right_tex),
-        reinterpret_cast<void*>(&num_candidates)
+        reinterpret_cast<void*>(&num_candidates),
+        reinterpret_cast<void*>(&ncc_threshold)
     };
 
     cudacheck(cudaLaunchKernel( reinterpret_cast<const void*>(apply_NCC_filter_kernel), grid_dim, block_dim, kernel_args, 0, nullptr) );
@@ -127,7 +129,8 @@ float apply_NCC_filter_pipeline(
     /* Others */
     int                         num_candidates,
     cudaEvent_t                 start,
-    cudaEvent_t                 stop)
+    cudaEvent_t                 stop,
+    float                       ncc_threshold)
 {
     cudacheck(cudaSetDevice(device_id));
 
@@ -143,9 +146,9 @@ float apply_NCC_filter_pipeline(
     } else {
         d_ncc_scores_out = nullptr;
     }
-    apply_NCC_filter_kernel_launcher(device_id, d_candidate_matches, d_left_edges, d_right_edges, 
-                                     d_final_matches_passing_NCC_filter, d_match_count_passing_NCC_filter, 
-                                     d_ncc_scores_out, d_left_patches, right_tex, num_candidates);
+    apply_NCC_filter_kernel_launcher(device_id, d_candidate_matches, d_left_edges, d_right_edges,
+                                     d_final_matches_passing_NCC_filter, d_match_count_passing_NCC_filter,
+                                     d_ncc_scores_out, d_left_patches, right_tex, num_candidates, ncc_threshold);
     cudacheck(cudaDeviceSynchronize());
 
     //> End the CUDA event timer for NCC filter

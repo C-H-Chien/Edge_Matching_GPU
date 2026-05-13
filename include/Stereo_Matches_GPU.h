@@ -16,7 +16,7 @@
 #include "Stereo_Matches_GPU_Validator.h"
 #include "Dataset.h"
 
-struct GPU_Timing_Statistics
+struct Stereo_Matches_GPU_Timing_Statistics
 {
     float time_spatial_grid_mapping;
     float time_epipolar_rasterization;
@@ -40,7 +40,7 @@ public:
     ~Stereo_Matches_GPU_Pipeline();
 
     //> main function for constructing stereo edge correspondences
-    void get_stereo_edge_matching_GPU(size_t frame_idx);
+    Stereo_Matches_GPU_Timing_Statistics get_stereo_edge_matching_GPU(size_t frame_idx);
 
     float build_edge_spatial_map();
     float rasterize_epipolar_band_for_matches();
@@ -55,6 +55,15 @@ public:
 
     //> Write the final stereo matching from GPU to a file; used for offline plotting and visual inspection
     void write_finalized_matches_to_file(size_t frame_idx) const;
+
+    //> Convert the GPU final stereo output (Merged_Refined_Stereo_Match_GPU[]) to a host-side
+    //> std::vector<final_stereo_edge_pair> so that the temporal GPU pipeline can use them as inputs.
+    //> CH Notes: Only the left/right edge positions (location, orientation) are populated; patches, descriptors,
+    //> and Gamma are left as defaults because the temporal GPU pipeline samples them on-the-fly.
+    //> However, it might be wise to cache the left edge patches and descriptors since they are unchanged 
+    //  in the process of temporal edge matching.
+    //> Must be called before the engine is reset/destroyed.
+    void retrieve_stereo_mates( const StereoFrame& frame, std::vector<final_stereo_edge_pair>& out_mates) const;
 
     int device_id;
     int img_left_height, img_right_height;

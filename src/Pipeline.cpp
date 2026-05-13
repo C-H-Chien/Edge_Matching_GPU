@@ -44,12 +44,14 @@ bool Pipeline::Add_Stereo_Frame()
         case PipelineStatus::STATUS_GET_STEREO_EDGE_CORRESPONDENCES:
             //> Get stereo edge correspondences
             LOG_STATUS("GET_STEREO_EDGE_CORRESPONDENCES");
-            get_Stereo_Edge_Correspondences();
+            // get_Stereo_Edge_Correspondences();
+            get_Stereo_Edge_Correspondences_GPU();
             break;
         case PipelineStatus::STATUS_GET_TEMPORAL_EDGE_CORRESPONDENCES:
             //> Get temporal edge correspondences (keyframe <-> current frame)
             LOG_STATUS("GET_TEMPORAL_EDGE_CORRESPONDENCES");
-            get_Temporal_Edge_Correspondences();
+            // get_Temporal_Edge_Correspondences();
+            get_Temporal_Edge_Correspondences_GPU();
             break;
         case PipelineStatus::STATUS_SYSTEM_EXIT:
             //> System exit
@@ -118,39 +120,26 @@ void Pipeline::prepare_Stereo_Images()
     send_control_to_main = false;
 }
 
-void Pipeline::get_Stereo_Edge_Correspondences()
+void Pipeline::get_Stereo_Edge_Correspondences_GPU() 
 {
     //> Reset before allocate: frees the previous frame's GPU pipeline before this frame's cudaMalloc traffic (avoids a brief 2x VRAM spike).
-    //> Reset after file write below: release GPU immediately; nothing else uses stereo_matches_engine_GPU until the next stereo pass.
     stereo_matches_engine_GPU.reset();
+
+    Stereo_Matches_GPU_Timing_Statistics stereo_GPU_times;
     stereo_matches_engine_GPU = std::make_shared<Stereo_Matches_GPU_Pipeline>(dataset_, current_frame, DEVICE_ID);
-    stereo_matches_engine_GPU->get_stereo_edge_matching_GPU(stereo_current_frame_idx);
+    stereo_GPU_times = stereo_matches_engine_GPU->get_stereo_edge_matching_GPU(stereo_current_frame_idx);
+    collect_stereo_GPU_times.push_back(stereo_GPU_times);
+
+    //> Convert GPU final stereo matches -> current_frame_stereo_edge_mates so that the temporal
+    //  edge matching in GPU pipeline can consume them just like the CPU path does.
+    stereo_matches_engine_GPU->retrieve_stereo_mates(current_frame, current_frame_stereo_edge_mates);
 
     //> output the results to files
-    stereo_matches_engine_GPU->write_finalized_matches_to_file(stereo_current_frame_idx);
+    // stereo_matches_engine_GPU->write_finalized_matches_to_file(stereo_current_frame_idx);
+
+    //> Release GPU immediately; nothing else uses stereo_matches_engine_GPU until the next stereo pass.
+    //> CH Notes: this is subject to change in the future.
     stereo_matches_engine_GPU.reset();
-
-    // //> Set the stereo left constructor
-    // set_Stereo_Left_Constructor();
-    // Timing_Statistics stereo_timing_statistics;
-
-    // //> For each left edge, get the corresponding GT location (not right edge) on the right image, and the triangulated 3D point in the left camera coordinate
-    // //> For dataset without GT, we still need these functions to set up `current_frame_stereo_left_constructor` but we will not use the GT locations
-    // stereo_matches_engine->Find_Stereo_GT_Locations(dataset_, current_frame.left_disparity_map, current_frame, current_frame_stereo_left_constructor, true);
-    // //> Construct a GT stereo edge pool
-    // stereo_matches_engine->get_Stereo_Edge_GT_Pairs(dataset_, current_frame, current_frame_stereo_left_constructor, true);
-
-    // //> construct stereo edge correspondences for the current_frame
-    // Frame_Evaluation_Metrics metrics = stereo_matches_engine->get_Stereo_Edge_Pairs(dataset_, current_frame_stereo_left_constructor, stereo_current_frame_idx, stereo_timing_statistics);
-    // //> Only accumulate evaluation metrics when GT is available
-    // if (dataset_->has_gt()) {
-    //     all_stereo_matches_metrics.push_back(metrics);
-    // }
-
-    // //> Finalize the stereo edge pairs for the current_frame
-    // stereo_matches_engine->finalize_stereo_edge_mates(current_frame_stereo_left_constructor, current_frame_stereo_edge_mates);
-    
-    // // stereo_matches_engine->write_finalized_stereo_edge_pairs_to_file(dataset_, current_frame_stereo_edge_mates, stereo_current_frame_idx);
 
     //> If the current frame is the first frame, make current frame the keyframe
     if (get_Current_Frame_Index() == 0)
@@ -159,14 +148,145 @@ void Pipeline::get_Stereo_Edge_Correspondences()
         increment_Current_Stereo_Frame_Index();
         status_ = PipelineStatus::STATUS_IMG_PREPARATION;
         send_control_to_main = true;
-        b_end_pipeline_for_debug = true;
+        b_end_pipeline_for_debug = false;
     }
     else
     {
+        increment_Current_Stereo_Frame_Index();
         //> Shift to the next status
         status_ = PipelineStatus::STATUS_GET_TEMPORAL_EDGE_CORRESPONDENCES;
         send_control_to_main = false;
     }
+}
+
+void Pipeline::get_Stereo_Edge_Correspondences()
+{
+    //> Set the stereo left constructor
+    set_Stereo_Left_Constructor();
+    Timing_Statistics stereo_timing_statistics;
+
+    //> For each left edge, get the corresponding GT location (not right edge) on the right image, and the triangulated 3D point in the left camera coordinate
+    //> For dataset without GT, we still need these functions to set up `current_frame_stereo_left_constructor` but we will not use the GT locations
+    stereo_matches_engine->Find_Stereo_GT_Locations(dataset_, current_frame.left_disparity_map, current_frame, current_frame_stereo_left_constructor, true);
+    //> Construct a GT stereo edge pool
+    stereo_matches_engine->get_Stereo_Edge_GT_Pairs(dataset_, current_frame, current_frame_stereo_left_constructor, true);
+
+    //> construct stereo edge correspondences for the current_frame
+    Frame_Evaluation_Metrics metrics = stereo_matches_engine->get_Stereo_Edge_Pairs(dataset_, current_frame_stereo_left_constructor, stereo_current_frame_idx, stereo_timing_statistics);
+    //> Only accumulate evaluation metrics when GT is available
+    if (dataset_->has_gt()) {
+        all_stereo_matches_metrics.push_back(metrics);
+    }
+
+    //> Finalize the stereo edge pairs for the current_frame
+    stereo_matches_engine->finalize_stereo_edge_mates(current_frame_stereo_left_constructor, current_frame_stereo_edge_mates);
+    
+    // stereo_matches_engine->write_finalized_stereo_edge_pairs_to_file(dataset_, current_frame_stereo_edge_mates, stereo_current_frame_idx);
+
+    //> If the current frame is the first frame, make current frame the keyframe
+    if (get_Current_Frame_Index() == 0)
+    {
+        set_Keyframe();
+        increment_Current_Stereo_Frame_Index();
+        status_ = PipelineStatus::STATUS_IMG_PREPARATION;
+        send_control_to_main = true;
+        b_end_pipeline_for_debug = false;
+    }
+    else
+    {
+        increment_Current_Stereo_Frame_Index();
+        //> Shift to the next status
+        status_ = PipelineStatus::STATUS_GET_TEMPORAL_EDGE_CORRESPONDENCES;
+        send_control_to_main = false;
+    }
+}
+
+void Pipeline::get_Temporal_Edge_Correspondences_GPU()
+{
+    std::cout << "Finding temporal edge correspondences (GPU) (" << get_Keyframe_Index() << "->" << get_Current_Frame_Index() << ")" << std::endl;
+
+    //> Reset before allocate: avoids a brief 2x VRAM spike
+    temporal_matches_engine_GPU.reset();
+
+    Temporal_Matches_GPU_Timing_Statistics temporal_GPU_times;
+    temporal_matches_engine_GPU = std::make_shared<Temporal_Matches_GPU_Pipeline>(
+        dataset_,
+        keyframe,                        //> StereoFrame for KF images
+        current_frame,                   //> StereoFrame for CF images
+        keyframe_stereo_edge_mates,      //> populated by retrieve_stereo_mates at KF time
+        current_frame_stereo_edge_mates, //> populated by retrieve_stereo_mates this frame
+        DEVICE_ID);
+
+    //> Main temporal edge matching pipeline in GPU
+    temporal_GPU_times = temporal_matches_engine_GPU->get_temporal_edge_matching_GPU( stereo_key_frame_idx, stereo_current_frame_idx);
+
+    //> Retrieve final (kf_mate_idx, cf_mate_idx) pairs for downstream use
+    std::vector<Match_by_Edge_Index> final_quad_matches;
+    temporal_matches_engine_GPU->retrieve_final_matches(final_quad_matches);
+
+    collect_temporal_GPU_times.push_back(temporal_GPU_times);
+    temporal_matches_engine_GPU.reset();
+
+    //> final_quad_matches[i].left_edge_idx  = index into keyframe_stereo_edge_mates
+    //> final_quad_matches[i].right_edge_idx = index into current_frame_stereo_edge_mates
+
+    set_Keyframe();
+
+    status_ = PipelineStatus::STATUS_IMG_PREPARATION;
+    send_control_to_main = true;
+}
+
+void Pipeline::get_Temporal_Edge_Correspondences()
+{
+    std::cout << "Finding temporal edge correspondences (GPU) (" << get_Keyframe_Index() << "->" << get_Current_Frame_Index() << ")" << std::endl;
+    temporal_quads_by_kf.clear();
+    temporal_quads_by_kf.shrink_to_fit();
+
+    //> Reset spatial grids so they contain only the current frame's edges (otherwise candidates accumulate across frames and memory explodes)
+    reset_spatial_grids();
+    Timing_Statistics temporal_timing_statistics;
+
+    //> construct spatial grids for the current stereo edge mates
+    temporal_matches_engine->add_edges_to_spatial_grid(current_frame_stereo_edge_mates, left_spatial_grids, right_spatial_grids);
+
+    bool used_chained_veridical_quads = false;
+#if ENABLE_QUAD_PROPAGATION
+    if (dataset_->has_gt() && stereo_current_frame_idx > stereo_key_frame_idx + 1)
+        used_chained_veridical_quads = try_propagate_multihop_veridical_quads();
+#endif
+
+    //> `temporal_quads_by_kf` is a struct that stores quads from KF stereo edge pairs
+    //> One KF stereo edge pair could pair up with multiple veridical CF stereo edge pairs.
+    //> `build_Veridical_Quads` fills veridical quads when reference disparity GT exists; otherwise it still runs and seeds one
+    //> `KF_Temporal_Edge_Quads` per KF stereo mate (see Temporal_Matches::build_Veridical_Quads).
+    if (!used_chained_veridical_quads)
+        temporal_matches_engine->build_Veridical_Quads(temporal_quads_by_kf, keyframe_stereo_edge_mates, current_frame_stereo_edge_mates, keyframe_stereo_left_constructor, current_frame_stereo_left_constructor, left_spatial_grids, right_spatial_grids);
+
+    //> Store adjacent quads for multi-hop propagation (propagation path still requires has_gt() today).
+    if (!used_chained_veridical_quads && stereo_current_frame_idx == stereo_key_frame_idx + 1)
+        push_adjacent_veridical_snapshot();
+
+    //> Quad-centric pipeline: build veridical quads, apply filters, optionally convert to temporal pairs for backward compatibility
+    Frame_Evaluation_Metrics metrics = temporal_matches_engine->get_Temporal_Edge_Pairs_from_Quads(
+        temporal_quads_by_kf,
+        keyframe_stereo_edge_mates,
+        current_frame_stereo_edge_mates,
+        left_spatial_grids, right_spatial_grids,
+        keyframe_stereo_left_constructor, current_frame_stereo_left_constructor,
+        keyframe, current_frame,
+        stereo_key_frame_idx, stereo_current_frame_idx, temporal_timing_statistics);
+    //> Only accumulate temporal evaluation metrics when GT is available
+    if (dataset_->has_gt())
+        all_temporal_matches_metrics.push_back(metrics);
+
+    //> write quads to a file
+    // temporal_matches_engine->write_quads_to_file(temporal_quads_by_kf, stereo_key_frame_idx, stereo_current_frame_idx);
+
+    // timing_statistics_file << temporal_timing_statistics.total_time << " ";
+    // temporal_matches_engine->write_timings_to_file(temporal_matches_timing_statistics_file, temporal_timing_statistics);
+
+    status_ = PipelineStatus::STATUS_IMG_PREPARATION;
+    send_control_to_main = true;
 }
 
 const Pipeline::AdjacentQuadSnapshot *Pipeline::find_adjacent_snapshot(size_t kf_frame, size_t cf_frame) const
@@ -256,59 +376,6 @@ bool Pipeline::try_propagate_multihop_veridical_quads()
 
     return true;
 #endif
-}
-
-void Pipeline::get_Temporal_Edge_Correspondences()
-{
-    std::cout << "Finding the termpoal edge correspondences (" << stereo_key_frame_idx << "->" << stereo_current_frame_idx << ")" << std::endl;
-    temporal_quads_by_kf.clear();
-    temporal_quads_by_kf.shrink_to_fit();
-
-    //> Reset spatial grids so they contain only the current frame's edges (otherwise candidates accumulate across frames and memory explodes)
-    reset_spatial_grids();
-    Timing_Statistics temporal_timing_statistics;
-
-    //> construct spatial grids for the current stereo edge mates
-    temporal_matches_engine->add_edges_to_spatial_grid(current_frame_stereo_edge_mates, left_spatial_grids, right_spatial_grids);
-
-    bool used_chained_veridical_quads = false;
-#if ENABLE_QUAD_PROPAGATION
-    if (dataset_->has_gt() && stereo_current_frame_idx > stereo_key_frame_idx + 1)
-        used_chained_veridical_quads = try_propagate_multihop_veridical_quads();
-#endif
-
-    //> `temporal_quads_by_kf` is a struct that stores quads from KF stereo edge pairs
-    //> One KF stereo edge pair could pair up with multiple veridical CF stereo edge pairs.
-    //> `build_Veridical_Quads` fills veridical quads when reference disparity GT exists; otherwise it still runs and seeds one
-    //> `KF_Temporal_Edge_Quads` per KF stereo mate (see Temporal_Matches::build_Veridical_Quads).
-    if (!used_chained_veridical_quads)
-        temporal_matches_engine->build_Veridical_Quads(temporal_quads_by_kf, keyframe_stereo_edge_mates, current_frame_stereo_edge_mates, keyframe_stereo_left_constructor, current_frame_stereo_left_constructor, left_spatial_grids, right_spatial_grids);
-
-    //> Store adjacent quads for multi-hop propagation (propagation path still requires has_gt() today).
-    if (!used_chained_veridical_quads && stereo_current_frame_idx == stereo_key_frame_idx + 1)
-        push_adjacent_veridical_snapshot();
-
-    //> Quad-centric pipeline: build veridical quads, apply filters, optionally convert to temporal pairs for backward compatibility
-    Frame_Evaluation_Metrics metrics = temporal_matches_engine->get_Temporal_Edge_Pairs_from_Quads(
-        temporal_quads_by_kf,
-        keyframe_stereo_edge_mates,
-        current_frame_stereo_edge_mates,
-        left_spatial_grids, right_spatial_grids,
-        keyframe_stereo_left_constructor, current_frame_stereo_left_constructor,
-        keyframe, current_frame,
-        stereo_key_frame_idx, stereo_current_frame_idx, temporal_timing_statistics);
-    //> Only accumulate temporal evaluation metrics when GT is available
-    if (dataset_->has_gt())
-        all_temporal_matches_metrics.push_back(metrics);
-
-    //> write quads to a file
-    // temporal_matches_engine->write_quads_to_file(temporal_quads_by_kf, stereo_key_frame_idx, stereo_current_frame_idx);
-
-    // timing_statistics_file << temporal_timing_statistics.total_time << " ";
-    // temporal_matches_engine->write_timings_to_file(temporal_matches_timing_statistics_file, temporal_timing_statistics);
-
-    status_ = PipelineStatus::STATUS_IMG_PREPARATION;
-    send_control_to_main = true;
 }
 
 //> Destructor
