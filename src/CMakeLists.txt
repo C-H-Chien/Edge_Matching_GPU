@@ -8,6 +8,7 @@ set (control_sources
         Stereo_Iterator.cpp
         EdgeClusterer.cpp
 
+        prepare_for_GPU.cpp
         Stereo_Matches_GPU.cpp
         Temporal_Matches_GPU.cpp
         Stereo_Matches_GPU_Validator.cpp
@@ -18,6 +19,7 @@ if(ENABLE_CUDA)
         gpu_kernels/spatial_grid_mapping.cu
         gpu_kernels/epipolar_rasterization.cu
         gpu_kernels/precompute_left_edge_patches_photometry.cu
+        gpu_kernels/precompute_left_edge_sift_descriptors.cu
         gpu_kernels/apply_NCC_on_the_fly.cu
         gpu_kernels/apply_SIFT_descriptor_filter.cu
         gpu_kernels/apply_best_nearly_best_filter.cu
@@ -25,6 +27,8 @@ if(ENABLE_CUDA)
         gpu_kernels/apply_second_NCC_filter.cu
         gpu_kernels/apply_best_second_ncc_per_left_edge.cu
         gpu_kernels/temporal_candidate_generation.cu
+        gpu_kernels/apply_precomputed_sift_filter.cu
+        gpu_kernels/temporal_photometric_refine_and_cluster.cu
     )
 endif()
 

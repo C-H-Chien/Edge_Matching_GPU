@@ -20,7 +20,7 @@ mean_patch(
     return s / static_cast<float>(TOTAL_NUM_OF_PATCH_PIXELS);
 }
 
-__device__ 
+static __device__ __forceinline__ 
 void 
 sample_rot_patch_I(
     cudaTextureObject_t tex,
@@ -41,7 +41,7 @@ sample_rot_patch_I(
     }
 }
 
-__device__ 
+static __device__ __forceinline__ 
 void 
 sample_rot_patch_gproj(
     cudaTextureObject_t tex,

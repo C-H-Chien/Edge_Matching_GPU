@@ -105,6 +105,7 @@ private:
     Match_by_Edge_Index* d_final_matches_passing_EP_LP_OR_filters = nullptr;
     float* d_F = nullptr;
     Precomputed_Edge_Patches_Photometry* d_left_patches = nullptr;
+    Precomputed_Edge_SIFT_Descriptor_GPU* d_left_sift_descriptors = nullptr;
     int* d_final_count_passing_NCC_filter = nullptr;
     Match_by_Edge_Index* d_final_matches_passing_NCC_filter = nullptr;
     float* d_ncc_scores_passing_NCC_filter = nullptr;

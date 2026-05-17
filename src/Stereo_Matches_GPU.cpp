@@ -33,16 +33,6 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     ,dataset_(std::move(dataset))
     ,stereo_frame_ptr_(&current_frame)
 {
-    // //> Fundamental matrix (left to right) is casted to float matrix.
-    // //> Eigen stores Matrix3f column-major by default, but kernels index h_F as row-major:
-    // //> [0..2] = first row, [3..5] = second row, [6..8] = third row.
-    // h_F_ = dataset_->get_fund_mat_21().cast<float>();
-    // for (int r = 0; r < 3; ++r) {
-    //     for (int c = 0; c < 3; ++c) {
-    //         h_F_row_major_[r * 3 + c] = h_F_(r, c);
-    //     }
-    // }
-    // h_F = h_F_row_major_;
     num_left_edges_ = current_frame.left_edges.size();
     num_right_edges_ = current_frame.right_edges.size();
 
@@ -62,26 +52,6 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     h_right_edges = new Edge_GPU[num_right_edges_];
     h_cell_ids = new int[num_right_edges_];
     h_matches_out = new Match_by_Edge_Index[max_stereo_edge_matches_after_epipolar_rasterization];
-
-    // //> Flatten images as float. Note that the data type needs to be CV_32F
-    // //> Prefer the undistorted image (the same image edges are detected on and CPU SIFT reads),
-    // //> If the undistorted image is empty, fall back to the raw distorted image
-    // //> The same chain feeds img_*_width/height above, so the buffer dimensions stay in sync with the source.
-    // const cv::Mat& left_src  = pick_image_for_gpu( current_frame.left_image_undistorted, current_frame.left_image );
-    // const cv::Mat& right_src = pick_image_for_gpu( current_frame.right_image_undistorted, current_frame.right_image );
-    // cv::Mat left_float;
-    // cv::Mat right_float;
-    // left_src.convertTo(left_float, CV_32F);
-    // right_src.convertTo(right_float, CV_32F);
-    // if (!left_float.isContinuous())
-    //     left_float = left_float.clone();
-    // if (!right_float.isContinuous())
-    //     right_float = right_float.clone();
-
-    // h_left_img = new float[img_left_width * img_left_height];
-    // h_right_img = new float[img_right_width * img_right_height];
-    // std::memcpy(h_left_img, left_float.ptr<float>(), static_cast<size_t>(img_left_width) * static_cast<size_t>(img_left_height) * sizeof(float));
-    // std::memcpy(h_right_img, right_float.ptr<float>(), static_cast<size_t>(img_right_width) * static_cast<size_t>(img_right_height) * sizeof(float));
 
     //> Casting the edges to the proper format for GPU processing
     #pragma omp parallel for
@@ -105,41 +75,6 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     std::cout << "Right image size: " << img_right_width << " x " << img_right_height << std::endl;
     std::cout << "Number of grid cells in width: " << num_of_grid_cells_in_width << std::endl;
 
-    //> Bind a valid CUDA device before any allocations (required on multi-GPU systems and some job schedulers)
-    //> Discard any sticky CUDA error from earlier API use in this process (e.g. OpenCV built with CUDA).
-    (void)cudaGetLastError();
-
-    int driver_ver = 0;
-    (void)cudaDriverGetVersion(&driver_ver);
-    int runtime_ver = 0;
-    (void)cudaRuntimeGetVersion(&runtime_ver);
-
-    int n_cuda_devices = 0;
-    cudaError_t err_count = cudaGetDeviceCount(&n_cuda_devices);
-    if (err_count != cudaSuccess) {
-        const char* cvd = ::getenv("CUDA_VISIBLE_DEVICES");
-        std::string cvd_str = cvd ? std::string(" CUDA_VISIBLE_DEVICES=\"") + cvd + "\"." : "";
-        throw std::runtime_error(
-            std::string("cudaGetDeviceCount failed: ") + cudaGetErrorString(err_count) + " (error code " + std::to_string(static_cast<int>(err_count)) + "). " +
-            "cudaDriverGetVersion=" + std::to_string(driver_ver) + ", cudaRuntimeGetVersion=" + std::to_string(runtime_ver) + "." + cvd_str +
-            " Error 999 (cudaErrorUnknown) is commonly a **NVIDIA driver vs CUDA toolkit mismatch**: the top of nvidia-smi shows the **maximum CUDA version the driver supports**; " +
-            "this binary uses libcudart 12.x (see runtime number). Rebuild and run with a **CUDA toolkit module that is <= that driver max**, "
-            "or use a node with a newer driver. Check `ldd` on your binary to see which libcudart is loaded.");
-    }
-    if (n_cuda_devices == 0) {
-        throw std::runtime_error(
-            "cudaGetDeviceCount returned success but reported 0 CUDA devices (runtime version " + std::to_string(runtime_ver) + "). " + 
-            "If nvidia-smi lists a GPU, common causes are: (i) running outside your GPU Slurm allocation in a shell that cannot " + 
-            "access /dev/nvidia*; (ii) CUDA_VISIBLE_DEVICES empty or invalid; (iii) cluster cgroup denies GPU to this process—launch " + 
-            "main_VO from the same interactive GPU session where nvidia-smi works.");
-    }
-    if (device_id < 0 || device_id >= n_cuda_devices) {
-        throw std::runtime_error(
-            "CUDA: invalid device_id " + std::to_string(device_id) + " (visible devices: 0-" +
-            std::to_string(n_cuda_devices - 1) + "). Adjust DEVICE_ID or CUDA_VISIBLE_DEVICES.");
-    }
-    cudacheck(cudaSetDevice(device_id));
-
     //> Allocate GPU memory
     cudacheck( cudaMalloc((void**)&d_F,                            9 * sizeof(float))    );
     cudacheck( cudaMalloc((void**)&d_left_edges,    num_left_edges_  * sizeof(Edge_GPU)) );
@@ -158,43 +93,7 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     //> cuda event
     cudacheck( cudaEventCreate(&start) );
     cudacheck( cudaEventCreate(&stop) );
-
-    //> Upload image data once per frame and keep texture objects alive for all image-sampling GPU stages
-    //> This avoids re-uploading the same undistorted images in each pipeline function.
-    // allocate_image_textures();
 }
-
-// void Stereo_Matches_GPU_Pipeline::allocate_image_textures()
-// {
-//     if (b_image_textures_ready_)
-//         return;
-
-//     cudacheck(cudaSetDevice(device_id));
-//     left_image_texture_  = create_CUDA_texture_object_for_img(h_left_img,  img_left_width,  img_left_height);
-//     right_image_texture_ = create_CUDA_texture_object_for_img(h_right_img, img_right_width, img_right_height);
-//     b_image_textures_ready_ = true;
-// }
-
-// void Stereo_Matches_GPU_Pipeline::release_image_textures()
-// {
-//     if (left_image_texture_.texObj != 0) {
-//         cudacheck(cudaDestroyTextureObject(left_image_texture_.texObj));
-//         left_image_texture_.texObj = 0;
-//     }
-//     if (left_image_texture_.array != nullptr) {
-//         cudacheck(cudaFreeArray(left_image_texture_.array));
-//         left_image_texture_.array = nullptr;
-//     }
-//     if (right_image_texture_.texObj != 0) {
-//         cudacheck(cudaDestroyTextureObject(right_image_texture_.texObj));
-//         right_image_texture_.texObj = 0;
-//     }
-//     if (right_image_texture_.array != nullptr) {
-//         cudacheck(cudaFreeArray(right_image_texture_.array));
-//         right_image_texture_.array = nullptr;
-//     }
-//     b_image_textures_ready_ = false;
-// }
 
 Stereo_Matches_GPU_Timing_Statistics Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU(size_t frame_idx) {
 
@@ -410,19 +309,33 @@ float Stereo_Matches_GPU_Pipeline::apply_SIFT_descriptor_filter() {
         return -1.0;
     }
 
-    return apply_SIFT_descriptor_filter_pipeline(
+    //> First pre-compute the left edge SIFT descriptors
+    float precompute_left_sift_time = 0.0f;
+    if (d_left_sift_descriptors == nullptr) {
+        precompute_left_sift_time = precompute_left_edge_sift_descriptors_pipeline(
+            device_id,
+            left_image_texture_.texObj,
+            d_left_sift_descriptors,
+            d_left_edges,
+            img_left_width,
+            img_left_height,
+            num_left_edges_,
+            start,
+            stop
+        );
+    }
+
+    //> The right edge SIFT descriptors are computed on-the-fly during the SIFT descriptor filter application
+    const float apply_sift_filter_time = apply_SIFT_descriptor_filter_pipeline(
         device_id,
         h_match_count_passing_SIFT_filter,
-        left_image_texture_.texObj,
         right_image_texture_.texObj,
         d_final_matches_passing_NCC_filter,
-        d_left_edges,
+        d_left_sift_descriptors,
         d_right_edges,
         d_final_matches_passing_SIFT_filter,
         d_final_count_passing_SIFT_filter,
         d_sift_scores_passing_SIFT_filter,
-        img_left_width,
-        img_left_height,
         img_right_width,
         img_right_height,
         h_match_count_passing_NCC_filter,
@@ -430,6 +343,8 @@ float Stereo_Matches_GPU_Pipeline::apply_SIFT_descriptor_filter() {
         stop,
         static_cast<float>(SIFT_THRESHOLD)
     );
+
+    return precompute_left_sift_time + apply_sift_filter_time;
 }
 
 float Stereo_Matches_GPU_Pipeline::apply_BNB_NCC_filter() {
@@ -753,6 +668,7 @@ Stereo_Matches_GPU_Pipeline::~Stereo_Matches_GPU_Pipeline()
     cudacheck( cudaFree(d_final_matches_passing_EP_LP_OR_filters) );
     cudacheck( cudaFree(d_match_count_passing_EP_LP_OR_filters) );
     cudacheck( cudaFree(d_left_patches) );
+    if (d_left_sift_descriptors) cudacheck( cudaFree(d_left_sift_descriptors) );
     cudacheck( cudaFree(d_final_matches_passing_NCC_filter) );
     cudacheck( cudaFree(d_final_count_passing_NCC_filter) );
     if (d_ncc_scores_passing_NCC_filter) cudacheck( cudaFree(d_ncc_scores_passing_NCC_filter) );
