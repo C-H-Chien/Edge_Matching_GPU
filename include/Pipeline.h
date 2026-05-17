@@ -17,6 +17,8 @@
 #include "utility.h"
 #include "Stereo_Matches.h"
 #include "Temporal_Matches.h"
+
+#include "prepare_for_GPU.h"
 #include "Stereo_Matches_GPU.h"
 #include "Temporal_Matches_GPU.h"
 
@@ -93,6 +95,12 @@ public:
 
     //> for debugging purpose
     bool b_end_pipeline_for_debug = false;
+
+    //> data and pointers used for the GPU pipeline
+    float* h_cf_left_img = nullptr;
+    float* h_cf_right_img = nullptr;
+    float* h_kf_left_img = nullptr;
+    float* h_kf_right_img = nullptr;
 
 private:
     size_t stereo_key_frame_idx;
@@ -219,6 +227,8 @@ private:
     Stereo_Matches::Ptr stereo_matches_engine = nullptr;
     Temporal_Matches::Ptr temporal_matches_engine = nullptr;
     Utility::Ptr utility_tool = nullptr;
+
+    Prepare_For_GPU_Pipeline::Ptr prepare_for_GPU_engine = nullptr;
     Stereo_Matches_GPU_Pipeline::Ptr stereo_matches_engine_GPU = nullptr;
     Temporal_Matches_GPU_Pipeline::Ptr temporal_matches_engine_GPU = nullptr;
 

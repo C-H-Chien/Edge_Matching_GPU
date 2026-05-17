@@ -90,6 +90,12 @@ public:
 
     void finalize_stereo_edge_mates(Stereo_Edge_Pairs &stereo_frame_edge_pairs, std::vector<final_stereo_edge_pair> &final_stereo_edge_pairs);
 
+    /** CH: This is for debugging and testing.
+     *  The purpose is to run the CPU termpoal-matching pipeline on the GPU stereo mates.
+     *  It fills in left/right edge patches and SIFT descriptors for mates that were produced by the
+     *  GPU stereo pipeline (which leaves those fields empty). */
+    void enrich_stereo_mates_for_cpu_temporal(std::vector<final_stereo_edge_pair> &mates, const StereoFrame &frame);
+
     //> utility functions
     void augment_Edge_Data(Stereo_Edge_Pairs &stereo_frame_edge_pairs, bool is_left);
     void add_edges_to_spatial_grid(Stereo_Edge_Pairs &stereo_frame_edge_pairs, SpatialGrid &spatial_grid, bool is_left);

@@ -51,7 +51,8 @@ bool Pipeline::Add_Stereo_Frame()
             //> Get temporal edge correspondences (keyframe <-> current frame)
             LOG_STATUS("GET_TEMPORAL_EDGE_CORRESPONDENCES");
             // get_Temporal_Edge_Correspondences();
-            get_Temporal_Edge_Correspondences_GPU();
+            // get_Temporal_Edge_Correspondences_GPU();
+            b_end_pipeline_for_debug = true;
             break;
         case PipelineStatus::STATUS_SYSTEM_EXIT:
             //> System exit
@@ -122,20 +123,31 @@ void Pipeline::prepare_Stereo_Images()
 
 void Pipeline::get_Stereo_Edge_Correspondences_GPU() 
 {
+    //> Set up the flattened fundamental matrix, left and right images, and the GPU device
+    prepare_for_GPU_engine = std::make_shared<Prepare_For_GPU_Pipeline>(dataset_, current_frame, DEVICE_ID);
+
     //> Reset before allocate: frees the previous frame's GPU pipeline before this frame's cudaMalloc traffic (avoids a brief 2x VRAM spike).
     stereo_matches_engine_GPU.reset();
 
     Stereo_Matches_GPU_Timing_Statistics stereo_GPU_times;
-    stereo_matches_engine_GPU = std::make_shared<Stereo_Matches_GPU_Pipeline>(dataset_, current_frame, DEVICE_ID);
+
+    //> h_F, left_image_texture_, right_image_texture_ are created and passed to the stereo matches engine
+    stereo_matches_engine_GPU = std::make_shared<Stereo_Matches_GPU_Pipeline>(dataset_, prepare_for_GPU_engine, current_frame, DEVICE_ID);
     stereo_GPU_times = stereo_matches_engine_GPU->get_stereo_edge_matching_GPU(stereo_current_frame_idx);
     collect_stereo_GPU_times.push_back(stereo_GPU_times);
 
-    //> Convert GPU final stereo matches -> current_frame_stereo_edge_mates so that the temporal
-    //  edge matching in GPU pipeline can consume them just like the CPU path does.
+    //> Convert GPU final stereo matches to the `current_frame_stereo_edge_mates` structure
+    //  for the preparation of feeding it into the temporal edge matching pipeline
+    //> CH: This should be optional
     stereo_matches_engine_GPU->retrieve_stereo_mates(current_frame, current_frame_stereo_edge_mates);
+    std::cout << "Number of stereo edge matches: " << current_frame_stereo_edge_mates.size() << std::endl;
+
+    //> Populate patches + SIFT descriptors so the CPU temporal pipeline can run on these mates.
+    //  (The GPU temporal pipeline computes NCC/SIFT from textures on-the-fly and doesn't need this.)
+    // stereo_matches_engine->enrich_stereo_mates_for_cpu_temporal(current_frame_stereo_edge_mates, current_frame);
 
     //> output the results to files
-    // stereo_matches_engine_GPU->write_finalized_matches_to_file(stereo_current_frame_idx);
+    stereo_matches_engine_GPU->write_finalized_matches_to_file(stereo_current_frame_idx);
 
     //> Release GPU immediately; nothing else uses stereo_matches_engine_GPU until the next stereo pass.
     //> CH Notes: this is subject to change in the future.
@@ -148,14 +160,14 @@ void Pipeline::get_Stereo_Edge_Correspondences_GPU()
         increment_Current_Stereo_Frame_Index();
         status_ = PipelineStatus::STATUS_IMG_PREPARATION;
         send_control_to_main = true;
-        b_end_pipeline_for_debug = false;
     }
     else
     {
-        increment_Current_Stereo_Frame_Index();
+        // increment_Current_Stereo_Frame_Index();
         //> Shift to the next status
         status_ = PipelineStatus::STATUS_GET_TEMPORAL_EDGE_CORRESPONDENCES;
         send_control_to_main = false;
+        b_end_pipeline_for_debug = true;
     }
 }
 
@@ -190,7 +202,6 @@ void Pipeline::get_Stereo_Edge_Correspondences()
         increment_Current_Stereo_Frame_Index();
         status_ = PipelineStatus::STATUS_IMG_PREPARATION;
         send_control_to_main = true;
-        b_end_pipeline_for_debug = false;
     }
     else
     {
@@ -198,11 +209,13 @@ void Pipeline::get_Stereo_Edge_Correspondences()
         //> Shift to the next status
         status_ = PipelineStatus::STATUS_GET_TEMPORAL_EDGE_CORRESPONDENCES;
         send_control_to_main = false;
+        b_end_pipeline_for_debug = true;
     }
 }
 
 void Pipeline::get_Temporal_Edge_Correspondences_GPU()
 {
+    exit(1);
     std::cout << "Finding temporal edge correspondences (GPU) (" << get_Keyframe_Index() << "->" << get_Current_Frame_Index() << ")" << std::endl;
 
     //> Reset before allocate: avoids a brief 2x VRAM spike
@@ -224,6 +237,9 @@ void Pipeline::get_Temporal_Edge_Correspondences_GPU()
     std::vector<Match_by_Edge_Index> final_quad_matches;
     temporal_matches_engine_GPU->retrieve_final_matches(final_quad_matches);
 
+    //> output the results to files
+    temporal_matches_engine_GPU->write_finalized_matches_to_file(stereo_key_frame_idx, stereo_current_frame_idx);
+
     collect_temporal_GPU_times.push_back(temporal_GPU_times);
     temporal_matches_engine_GPU.reset();
 
@@ -234,11 +250,12 @@ void Pipeline::get_Temporal_Edge_Correspondences_GPU()
 
     status_ = PipelineStatus::STATUS_IMG_PREPARATION;
     send_control_to_main = true;
+    b_end_pipeline_for_debug = true;
 }
 
 void Pipeline::get_Temporal_Edge_Correspondences()
 {
-    std::cout << "Finding temporal edge correspondences (GPU) (" << get_Keyframe_Index() << "->" << get_Current_Frame_Index() << ")" << std::endl;
+    std::cout << "Finding temporal edge correspondences (CPU) (" << get_Keyframe_Index() << "->" << get_Current_Frame_Index() << ")" << std::endl;
     temporal_quads_by_kf.clear();
     temporal_quads_by_kf.shrink_to_fit();
 
@@ -285,9 +302,24 @@ void Pipeline::get_Temporal_Edge_Correspondences()
     // timing_statistics_file << temporal_timing_statistics.total_time << " ";
     // temporal_matches_engine->write_timings_to_file(temporal_matches_timing_statistics_file, temporal_timing_statistics);
 
+    //> Count KF groups that still have at least one surviving candidate (= accepted temporal matches)
+    size_t final_match_count = 0;
+    for (const auto &kvq : temporal_quads_by_kf)
+        if (!kvq.candidate_quads.empty()) ++final_match_count;
+    std::cout << "[Temporal CPU] Final matches: " << final_match_count << std::endl;
+
+    set_Keyframe();
+
     status_ = PipelineStatus::STATUS_IMG_PREPARATION;
     send_control_to_main = true;
+    b_end_pipeline_for_debug = true;
 }
+
+// void Pipeline::free_stereo_temporal_pointers()
+// {
+//     stereo_matches_engine_GPU.reset();
+//     temporal_matches_engine_GPU.reset();
+// }
 
 const Pipeline::AdjacentQuadSnapshot *Pipeline::find_adjacent_snapshot(size_t kf_frame, size_t cf_frame) const
 {

@@ -1824,6 +1824,42 @@ void Stereo_Matches::finalize_stereo_edge_mates(Stereo_Edge_Pairs &stereo_frame_
     std::cout << "Size of finalized stereo edge pairs = " << final_stereo_edge_pairs.size() << std::endl;
 }
 
+void Stereo_Matches::enrich_stereo_mates_for_cpu_temporal(
+    std::vector<final_stereo_edge_pair> &mates, const StereoFrame &frame)
+{
+    if (mates.empty())
+        return;
+
+    cv::Mat left_64f, right_64f;
+    frame.left_image_undistorted.convertTo(left_64f, CV_64F);
+    frame.right_image_undistorted.convertTo(right_64f, CV_64F);
+
+    cv::Ptr<cv::SIFT> sift = cv::SIFT::create();
+
+#pragma omp parallel for schedule(dynamic)
+    for (int i = 0; i < static_cast<int>(mates.size()); ++i) {
+        final_stereo_edge_pair &m = mates[static_cast<size_t>(i)];
+
+        m.left_edge_patches  = utility_tool->get_edge_patches(m.left_edge,  left_64f);
+        m.right_edge_patches = utility_tool->get_edge_patches(m.right_edge, right_64f);
+
+        auto compute_sift = [&](const Edge &edge, const cv::Mat &img) -> std::pair<cv::Mat, cv::Mat> {
+            std::pair<cv::Point2d, cv::Point2d> pts = utility_tool->get_Orthogonal_Shifted_Points(edge, 8);
+            std::vector<cv::KeyPoint> kps;
+            kps.emplace_back(pts.first,  1, static_cast<float>(180.0 / M_PI * edge.orientation));
+            kps.emplace_back(pts.second, 1, static_cast<float>(180.0 / M_PI * edge.orientation));
+            cv::Mat desc;
+            sift->compute(img, kps, desc);
+            if (desc.rows >= 2)
+                return {desc.row(0).clone(), desc.row(1).clone()};
+            return {cv::Mat(), cv::Mat()};
+        };
+
+        m.left_edge_descriptors  = compute_sift(m.left_edge,  frame.left_image_undistorted);
+        m.right_edge_descriptors = compute_sift(m.right_edge, frame.right_image_undistorted);
+    }
+}
+
 //> write finalized stereo edge pairs and their 3D points and tangents to a file
 void Stereo_Matches::write_finalized_stereo_edge_pairs_to_file(Dataset::Ptr dataset, const std::vector<final_stereo_edge_pair> &final_stereo_edge_pairs, size_t frame_idx)
 {

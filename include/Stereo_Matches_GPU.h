@@ -13,6 +13,7 @@
 #include "gpu_settings.h"
 #include "definitions.h"
 #include "gpu_kernels.h"
+#include "prepare_for_GPU.h"
 #include "Stereo_Matches_GPU_Validator.h"
 #include "Dataset.h"
 
@@ -36,7 +37,7 @@ public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     typedef std::shared_ptr<Stereo_Matches_GPU_Pipeline> Ptr;
 
-    Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, const StereoFrame& current_frame, int device);
+    Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, const Prepare_For_GPU_Pipeline::Ptr prepare_for_GPU_engin, const StereoFrame& current_frame, int device);
     ~Stereo_Matches_GPU_Pipeline();
 
     //> main function for constructing stereo edge correspondences
@@ -79,7 +80,6 @@ public:
 
 private:
     //> Pointers to the host memory
-    float* h_left_img = nullptr;
     float* h_right_img = nullptr;
     Edge_GPU* h_left_edges = nullptr;
     Edge_GPU* h_right_edges = nullptr;
@@ -124,7 +124,6 @@ private:
     float* d_ncc_scores_passing_second_NCC_filter = nullptr;
     CUDA_Texture_Wrapper left_image_texture_ = {nullptr, 0};
     CUDA_Texture_Wrapper right_image_texture_ = {nullptr, 0};
-    bool b_image_textures_ready_ = false;
 
     int num_of_grid_cells_in_width;
     int num_of_grid_cells_in_height;
@@ -139,8 +138,8 @@ private:
     /** Valid for comparisons only if the StereoFrame outlives this pipeline instance (same as Pipeline::current_frame). */
     const StereoFrame* stereo_frame_ptr_ = nullptr;
 
-    void allocate_image_textures();
-    void release_image_textures();
+    // void allocate_image_textures();
+    // void release_image_textures();
     void release_merged_refined_outputs();
 
     //> GPU results validation
@@ -151,30 +150,5 @@ private:
     void test_ncc_filter() const;
     void test_SIFT_descriptor_filter() const;
 };
-
-namespace {
-//> Picks the GPU-side image source: undistorted whenever it's available, else the raw
-//> distorted image as a graceful fallback. Used in the constructor's initializer list
-//> (for width/height) and in the constructor body (for the float buffer). Keeping a
-//> single chooser avoids drifting between the two.
-const cv::Mat& pick_image_for_gpu(const cv::Mat& undistorted, const cv::Mat& raw)
-{
-    if (!undistorted.empty())
-        return undistorted;
-    return raw;
-}
-
-int mat_rows_prefer_undistorted(const cv::Mat& undistorted, const cv::Mat& raw)
-{
-    const cv::Mat& chosen = pick_image_for_gpu(undistorted, raw);
-    return chosen.empty() ? 0 : chosen.rows;
-}
-
-int mat_cols_prefer_undistorted(const cv::Mat& undistorted, const cv::Mat& raw)
-{
-    const cv::Mat& chosen = pick_image_for_gpu(undistorted, raw);
-    return chosen.empty() ? 0 : chosen.cols;
-}
-} // namespace
 
 #endif

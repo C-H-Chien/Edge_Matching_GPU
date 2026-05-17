@@ -19,25 +19,30 @@
 #include "gpu_kernels.h"
 #include "Dataset.h"
 
-Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, const StereoFrame& current_frame, int device)
+Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, const Prepare_For_GPU_Pipeline::Ptr prepare_for_GPU_engine, 
+                                                         const StereoFrame& current_frame, int device)
     : device_id(device)
     ,img_left_height(mat_rows_prefer_undistorted(current_frame.left_image_undistorted, current_frame.left_image))
     ,img_right_height(mat_rows_prefer_undistorted(current_frame.right_image_undistorted, current_frame.right_image))
     ,img_left_width(mat_cols_prefer_undistorted(current_frame.left_image_undistorted, current_frame.left_image))
     ,img_right_width(mat_cols_prefer_undistorted(current_frame.right_image_undistorted, current_frame.right_image))
+    ,h_F(prepare_for_GPU_engine->h_F)
+    ,left_image_texture_(prepare_for_GPU_engine->left_image_texture_)
+    ,right_image_texture_(prepare_for_GPU_engine->right_image_texture_)
+    ,h_right_img(prepare_for_GPU_engine->h_right_img)
     ,dataset_(std::move(dataset))
     ,stereo_frame_ptr_(&current_frame)
 {
-    //> Fundamental matrix (left to right) is casted to float matrix.
-    //> Eigen stores Matrix3f column-major by default, but kernels index h_F as row-major:
-    //> [0..2] = first row, [3..5] = second row, [6..8] = third row.
-    h_F_ = dataset_->get_fund_mat_21().cast<float>();
-    for (int r = 0; r < 3; ++r) {
-        for (int c = 0; c < 3; ++c) {
-            h_F_row_major_[r * 3 + c] = h_F_(r, c);
-        }
-    }
-    h_F = h_F_row_major_;
+    // //> Fundamental matrix (left to right) is casted to float matrix.
+    // //> Eigen stores Matrix3f column-major by default, but kernels index h_F as row-major:
+    // //> [0..2] = first row, [3..5] = second row, [6..8] = third row.
+    // h_F_ = dataset_->get_fund_mat_21().cast<float>();
+    // for (int r = 0; r < 3; ++r) {
+    //     for (int c = 0; c < 3; ++c) {
+    //         h_F_row_major_[r * 3 + c] = h_F_(r, c);
+    //     }
+    // }
+    // h_F = h_F_row_major_;
     num_left_edges_ = current_frame.left_edges.size();
     num_right_edges_ = current_frame.right_edges.size();
 
@@ -58,25 +63,25 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     h_cell_ids = new int[num_right_edges_];
     h_matches_out = new Match_by_Edge_Index[max_stereo_edge_matches_after_epipolar_rasterization];
 
-    //> Flatten images as float. Note that the data type needs to be CV_32F
-    //> Prefer the undistorted image (the same image edges are detected on and CPU SIFT reads),
-    //> If the undistorted image is empty, fall back to the raw distorted image
-    //> The same chain feeds img_*_width/height above, so the buffer dimensions stay in sync with the source.
-    const cv::Mat& left_src  = pick_image_for_gpu( current_frame.left_image_undistorted, current_frame.left_image );
-    const cv::Mat& right_src = pick_image_for_gpu( current_frame.right_image_undistorted, current_frame.right_image );
-    cv::Mat left_float;
-    cv::Mat right_float;
-    left_src.convertTo(left_float, CV_32F);
-    right_src.convertTo(right_float, CV_32F);
-    if (!left_float.isContinuous())
-        left_float = left_float.clone();
-    if (!right_float.isContinuous())
-        right_float = right_float.clone();
+    // //> Flatten images as float. Note that the data type needs to be CV_32F
+    // //> Prefer the undistorted image (the same image edges are detected on and CPU SIFT reads),
+    // //> If the undistorted image is empty, fall back to the raw distorted image
+    // //> The same chain feeds img_*_width/height above, so the buffer dimensions stay in sync with the source.
+    // const cv::Mat& left_src  = pick_image_for_gpu( current_frame.left_image_undistorted, current_frame.left_image );
+    // const cv::Mat& right_src = pick_image_for_gpu( current_frame.right_image_undistorted, current_frame.right_image );
+    // cv::Mat left_float;
+    // cv::Mat right_float;
+    // left_src.convertTo(left_float, CV_32F);
+    // right_src.convertTo(right_float, CV_32F);
+    // if (!left_float.isContinuous())
+    //     left_float = left_float.clone();
+    // if (!right_float.isContinuous())
+    //     right_float = right_float.clone();
 
-    h_left_img = new float[img_left_width * img_left_height];
-    h_right_img = new float[img_right_width * img_right_height];
-    std::memcpy(h_left_img, left_float.ptr<float>(), static_cast<size_t>(img_left_width) * static_cast<size_t>(img_left_height) * sizeof(float));
-    std::memcpy(h_right_img, right_float.ptr<float>(), static_cast<size_t>(img_right_width) * static_cast<size_t>(img_right_height) * sizeof(float));
+    // h_left_img = new float[img_left_width * img_left_height];
+    // h_right_img = new float[img_right_width * img_right_height];
+    // std::memcpy(h_left_img, left_float.ptr<float>(), static_cast<size_t>(img_left_width) * static_cast<size_t>(img_left_height) * sizeof(float));
+    // std::memcpy(h_right_img, right_float.ptr<float>(), static_cast<size_t>(img_right_width) * static_cast<size_t>(img_right_height) * sizeof(float));
 
     //> Casting the edges to the proper format for GPU processing
     #pragma omp parallel for
@@ -156,40 +161,40 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
 
     //> Upload image data once per frame and keep texture objects alive for all image-sampling GPU stages
     //> This avoids re-uploading the same undistorted images in each pipeline function.
-    allocate_image_textures();
+    // allocate_image_textures();
 }
 
-void Stereo_Matches_GPU_Pipeline::allocate_image_textures()
-{
-    if (b_image_textures_ready_)
-        return;
+// void Stereo_Matches_GPU_Pipeline::allocate_image_textures()
+// {
+//     if (b_image_textures_ready_)
+//         return;
 
-    cudacheck(cudaSetDevice(device_id));
-    left_image_texture_  = create_CUDA_texture_object_for_img(h_left_img,  img_left_width,  img_left_height);
-    right_image_texture_ = create_CUDA_texture_object_for_img(h_right_img, img_right_width, img_right_height);
-    b_image_textures_ready_ = true;
-}
+//     cudacheck(cudaSetDevice(device_id));
+//     left_image_texture_  = create_CUDA_texture_object_for_img(h_left_img,  img_left_width,  img_left_height);
+//     right_image_texture_ = create_CUDA_texture_object_for_img(h_right_img, img_right_width, img_right_height);
+//     b_image_textures_ready_ = true;
+// }
 
-void Stereo_Matches_GPU_Pipeline::release_image_textures()
-{
-    if (left_image_texture_.texObj != 0) {
-        cudacheck(cudaDestroyTextureObject(left_image_texture_.texObj));
-        left_image_texture_.texObj = 0;
-    }
-    if (left_image_texture_.array != nullptr) {
-        cudacheck(cudaFreeArray(left_image_texture_.array));
-        left_image_texture_.array = nullptr;
-    }
-    if (right_image_texture_.texObj != 0) {
-        cudacheck(cudaDestroyTextureObject(right_image_texture_.texObj));
-        right_image_texture_.texObj = 0;
-    }
-    if (right_image_texture_.array != nullptr) {
-        cudacheck(cudaFreeArray(right_image_texture_.array));
-        right_image_texture_.array = nullptr;
-    }
-    b_image_textures_ready_ = false;
-}
+// void Stereo_Matches_GPU_Pipeline::release_image_textures()
+// {
+//     if (left_image_texture_.texObj != 0) {
+//         cudacheck(cudaDestroyTextureObject(left_image_texture_.texObj));
+//         left_image_texture_.texObj = 0;
+//     }
+//     if (left_image_texture_.array != nullptr) {
+//         cudacheck(cudaFreeArray(left_image_texture_.array));
+//         left_image_texture_.array = nullptr;
+//     }
+//     if (right_image_texture_.texObj != 0) {
+//         cudacheck(cudaDestroyTextureObject(right_image_texture_.texObj));
+//         right_image_texture_.texObj = 0;
+//     }
+//     if (right_image_texture_.array != nullptr) {
+//         cudacheck(cudaFreeArray(right_image_texture_.array));
+//         right_image_texture_.array = nullptr;
+//     }
+//     b_image_textures_ready_ = false;
+// }
 
 Stereo_Matches_GPU_Timing_Statistics Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU(size_t frame_idx) {
 
@@ -377,7 +382,7 @@ float Stereo_Matches_GPU_Pipeline::apply_NCC_filter() {
     cudacheck(cudaMalloc(&d_final_matches_passing_NCC_filter, ncc_out_bytes));
     cudacheck(cudaMalloc(&d_final_count_passing_NCC_filter, sizeof(int)));
 
-    std::cout << "Number of matches passing EP, LP, and OR filters: " << num_candidates << std::endl;
+    // std::cout << "Number of matches passing EP, LP, and OR filters: " << num_candidates << std::endl;
     return apply_NCC_filter_pipeline(
         device_id,
         h_match_count_passing_NCC_filter,
@@ -602,17 +607,14 @@ void Stereo_Matches_GPU_Pipeline::retrieve_stereo_mates( const StereoFrame& fram
         return;
     }
 
+    //> h_match_count_passing_NCC_filter is the final number of stereo matches from the GPU pipeline
     const int n = h_match_count_passing_NCC_filter;
-    std::vector<Merged_Refined_Stereo_Match_GPU> gpu_matches(static_cast<size_t>(n));
-    cudaError_t err = cudaMemcpy(gpu_matches.data(), d_merged_refined_matches, static_cast<size_t>(n) * sizeof(Merged_Refined_Stereo_Match_GPU), cudaMemcpyDeviceToHost);
-    if (err != cudaSuccess) {
-        LOG_ERROR("retrieve_stereo_mates: cudaMemcpy failed: " + std::string(cudaGetErrorString(err)));
-        return;
-    }
+    std::vector<Merged_Refined_Stereo_Match_GPU> gpu_stereo_matches(static_cast<size_t>(n));
+    cudacheck( cudaMemcpy(gpu_stereo_matches.data(), d_merged_refined_matches, static_cast<size_t>(n) * sizeof(Merged_Refined_Stereo_Match_GPU), cudaMemcpyDeviceToHost) );
 
     out_mates.reserve(static_cast<size_t>(n));
     for (int i = 0; i < n; ++i) {
-        const Merged_Refined_Stereo_Match_GPU& m = gpu_matches[static_cast<size_t>(i)];
+        const Merged_Refined_Stereo_Match_GPU& m = gpu_stereo_matches[static_cast<size_t>(i)];
         if (m.left_edge_idx < 0 || static_cast<size_t>(m.left_edge_idx) >= frame.left_edges.size())
             continue;
 
@@ -621,13 +623,12 @@ void Stereo_Matches_GPU_Pipeline::retrieve_stereo_mates( const StereoFrame& fram
         //> Construct a synthetic right edge from the GPU-refined position.
         //> frame_source is inherited from the left edge (same stereo pair).
         mate.right_edge = Edge(
-            cv::Point2d(static_cast<double>(m.merged_right_x),
-                        static_cast<double>(m.merged_right_y)),
-            static_cast<double>(m.merged_right_orientation),
-            false,
+            cv::Point2d(static_cast<double>(m.merged_right_x), static_cast<double>(m.merged_right_y)), 
+            static_cast<double>(m.merged_right_orientation), 
+            false, 
             mate.left_edge.frame_source);
-        //> Patches, descriptors, and Gamma are left as defaults: the temporal GPU pipeline
-        //> computes NCC/SIFT from image textures on-the-fly and does not read these fields.
+        
+            //> Patches, descriptors, and Gamma are left as defaults right now.
         out_mates.push_back(std::move(mate));
     }
 }
@@ -732,11 +733,11 @@ void Stereo_Matches_GPU_Pipeline::write_finalized_matches_to_file(size_t frame_i
 Stereo_Matches_GPU_Pipeline::~Stereo_Matches_GPU_Pipeline()
 {
     //> h_F aliases fixed storage h_F_row_major_; no need to free it.
-    release_image_textures();
+    // release_image_textures();
     release_merged_refined_outputs();
 
-    delete[] h_left_img;
-    delete[] h_right_img;
+    // delete[] h_left_img;
+    // delete[] h_right_img;
     delete[] h_left_edges;
     delete[] h_right_edges;
     delete[] h_cell_ids;
