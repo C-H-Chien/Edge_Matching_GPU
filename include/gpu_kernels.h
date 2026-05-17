@@ -15,14 +15,14 @@ struct Edge_GPU {
     float orientation;
 };
 
+struct Match_by_Edge_Index {
+    int left_edge_idx;
+    int right_edge_idx;
+};
+
 struct Point2D_GPU {
     float x;
     float y;
-};
-
-struct Match_by_Edge_Index { 
-    int left_edge_idx;
-    int right_edge_idx; 
 };
 
 //> CUDA texture wrapper holds the GPU texture object and its underlying array
@@ -49,6 +49,15 @@ struct Merged_Refined_Stereo_Match_GPU {
     float merged_right_orientation;
 };
 
+//> One valid BNB-SIFT candidate after 2D Gauss-Newton refinement on both temporal sides.
+struct Temporal_Refined_Match_GPU {
+    int   kf_mate_idx;
+    int   cf_mate_idx;
+    float cf_left_x;
+    float cf_left_y;
+    float rms;
+};
+
 //> The left edge patches are pre-computed and stored in global memory
 struct Precomputed_Edge_Patches_Photometry {
     float pL_plus[TOTAL_NUM_OF_PATCH_PIXELS];
@@ -58,6 +67,11 @@ struct Precomputed_Edge_Patches_Photometry {
     float pL_minus[TOTAL_NUM_OF_PATCH_PIXELS];
     float mL_minus; //> mean
     float vL_minus; //> standard deviation
+};
+
+struct Precomputed_Edge_SIFT_Descriptor_GPU {
+    float pL_plus[SIFT_DESCRIPTOR_DIM];
+    float pL_minus[SIFT_DESCRIPTOR_DIM];
 };
 
 inline CUDA_Texture_Wrapper create_CUDA_texture_object_for_img(float* h_img, int img_width, int img_height) 
@@ -156,23 +170,33 @@ float precompute_left_edge_patches_photometry_pipeline(
     cudaEvent_t     stop
 );
 
+//> GPU kernel pipeline for precompute left edge SIFT descriptors (defined in precompute_left_edge_sift_descriptors.cu)
+float precompute_left_edge_sift_descriptors_pipeline(
+    int             device_id,
+    cudaTextureObject_t left_tex,
+    Precomputed_Edge_SIFT_Descriptor_GPU*& d_left_sift_descriptors,
+    Edge_GPU*       d_left_edges,
+    int             left_img_width,
+    int             left_img_height,
+    std::size_t     num_of_left_edges,
+    cudaEvent_t     start,
+    cudaEvent_t     stop
+);
+
 //> GPU-only SIFT-style descriptor filter (defined in apply_SIFT_descriptor_filter.cu).
 float apply_SIFT_descriptor_filter_pipeline(
     int                         device_id,
     /* Data live in the host memory */
     int                         &h_SIFT_match_count_out,
     /* Data live in the device memory */
-    cudaTextureObject_t         left_tex,
     cudaTextureObject_t         right_tex,
     const Match_by_Edge_Index*  d_ncc_matches,
-    const Edge_GPU*             d_left_edges,
+    const Precomputed_Edge_SIFT_Descriptor_GPU* d_left_sift_descriptors,
     const Edge_GPU*             d_right_edges,
     Match_by_Edge_Index*        &d_final_matches_passing_SIFT_filter,
     int*                        &d_final_count_passing_SIFT_filter,
     float*                      &d_sift_scores_out,
     /* Others */
-    int                         left_img_width,
-    int                         left_img_height,
     int                         right_img_width,
     int                         right_img_height,
     int                         num_ncc_matches,
@@ -182,6 +206,8 @@ float apply_SIFT_descriptor_filter_pipeline(
 );
 
 //> GPU kernel pipeline for apply NCC filter (defined in apply_NCC_on_the_fly.cu)
+//> Optional carry-through: pass d_input_passthrough_scores + d_output_passthrough_scores_ptr
+//> to propagate a prior-stage score (e.g. left-left NCC) in parallel with survivors.
 float apply_NCC_filter_pipeline(
     int                         device_id,
     int                         &h_NCC_match_count_out,
@@ -199,7 +225,9 @@ float apply_NCC_filter_pipeline(
     int                         num_candidates,
     cudaEvent_t                 start,
     cudaEvent_t                 stop,
-    float                       ncc_threshold
+    float                       ncc_threshold,
+    const float*                d_input_passthrough_scores    = nullptr,
+    float**                     d_output_passthrough_scores_ptr = nullptr
 );
 
 //> GPU kernel pipeline for Best-Nearly-Best filtering (defined in apply_best_nearly_best_filter.cu)
@@ -293,6 +321,34 @@ float apply_best_second_ncc_per_left_edge_pipeline(
     int                         num_candidates,
     cudaEvent_t                 start,
     cudaEvent_t                 stop
+);
+
+//> GPU 2D photometric refinement (Gauss-Newton) + distance-based clustering for temporal quads.
+//> (defined in temporal_photometric_refine_and_cluster.cu)
+//> Returns elapsed GPU milliseconds.
+float temporal_photometric_refine_and_cluster_pipeline(
+    int                                                 device_id,
+    const Match_by_Edge_Index*                          d_bnb_sift_matches,
+    int                                                 num_bnb_sift,
+    const Precomputed_Edge_Patches_Photometry*          d_kf_left_patches,
+    const Precomputed_Edge_Patches_Photometry*          d_kf_right_patches,
+    const Edge_GPU*                                     d_kf_left_edges,
+    const Edge_GPU*                                     d_kf_right_edges,
+    const Edge_GPU*                                     d_cf_left_edges,
+    const Edge_GPU*                                     d_cf_right_edges,
+    cudaTextureObject_t                                 cf_left_tex,
+    cudaTextureObject_t                                 cf_right_tex,
+    int                                                 img_w,
+    int                                                 img_h,
+    //> outputs (lazily allocated by the callee)
+    Temporal_Refined_Match_GPU*&                        d_refined_matches,
+    int*&                                               d_refined_count,
+    int&                                                h_refined_count_out,
+    Match_by_Edge_Index*&                               d_clustered_matches,
+    int*&                                               d_clustered_count,
+    int&                                                h_clustered_count_out,
+    cudaEvent_t                                         start,
+    cudaEvent_t                                         stop
 );
 
 #endif // GPU_KERNELS_H
