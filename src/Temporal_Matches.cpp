@@ -272,47 +272,61 @@ Frame_Evaluation_Metrics Temporal_Matches::run_temporal_quad_pipeline_filters(
 {
     Frame_Evaluation_Metrics frame_metrics;
 
+    //> Count total candidate pairs across all KF groups for logging
+    auto count_candidates = [&]() {
+        size_t n = 0;
+        for (const auto &kvq : temporal_quads_by_kf)
+            n += kvq.candidate_quads.size();
+        return n;
+    };
+
     std::chrono::high_resolution_clock::time_point start_time, end_time;
     start_time = std::chrono::high_resolution_clock::now();
-    apply_spatial_grid_filtering_quads(temporal_quads_by_kf, CF_stereo_edge_mates, left_spatial_grids, right_spatial_grids, 30.0);
+    apply_spatial_grid_filtering_quads(temporal_quads_by_kf, CF_stereo_edge_mates, left_spatial_grids, right_spatial_grids, TEMPORAL_SEARCH_RADIUS_PIXELS);
     end_time = std::chrono::high_resolution_clock::now();
     timing_statistics.time_DP = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+    std::cout << "[Temporal CPU] Candidates after spatial+OR filter: " << count_candidates() << std::endl;
     if (dataset->has_gt())
         frame_metrics.stages.push_back({"Location Proximity", Evaluate_Temporal_Edge_Pairs_on_Quads(temporal_quads_by_kf, keyframe_idx, current_frame_idx, "Location Proximity Filtering")});
 
     start_time = std::chrono::high_resolution_clock::now();
-    apply_orientation_filtering_quads(temporal_quads_by_kf, CF_stereo_edge_mates, 10.0);
+    apply_orientation_filtering_quads(temporal_quads_by_kf, CF_stereo_edge_mates, EDGE_PAIR_ORIENTATION_PREFILTER_DEG);
     end_time = std::chrono::high_resolution_clock::now();
     timing_statistics.time_OR = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+    std::cout << "[Temporal CPU] Candidates after orientation filter:  " << count_candidates() << std::endl;
     if (dataset->has_gt())
         frame_metrics.stages.push_back({"Orientation", Evaluate_Temporal_Edge_Pairs_on_Quads(temporal_quads_by_kf, keyframe_idx, current_frame_idx, "Orientation Filtering")});
 
     start_time = std::chrono::high_resolution_clock::now();
-    apply_NCC_filtering_quads(temporal_quads_by_kf, CF_stereo_edge_mates, 0.8,
+    apply_NCC_filtering_quads(temporal_quads_by_kf, CF_stereo_edge_mates, TEMPORAL_NCC_THRESHOLD,
         keyframe.left_image, keyframe.right_image, current_frame.left_image, current_frame.right_image);
     end_time = std::chrono::high_resolution_clock::now();
     timing_statistics.time_NCC = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+    std::cout << "[Temporal CPU] Candidates after NCC filter:          " << count_candidates() << std::endl;
     if (dataset->has_gt())
         frame_metrics.stages.push_back({"NCC", Evaluate_Temporal_Edge_Pairs_on_Quads(temporal_quads_by_kf, keyframe_idx, current_frame_idx, "NCC Filtering")});
 
     start_time = std::chrono::high_resolution_clock::now();
-    apply_SIFT_filtering_quads(temporal_quads_by_kf, CF_stereo_edge_mates, 200.0);
+    apply_SIFT_filtering_quads(temporal_quads_by_kf, CF_stereo_edge_mates, TEMPORAL_SIFT_THRESHOLD);
     end_time = std::chrono::high_resolution_clock::now();
     timing_statistics.time_SIFT = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+    std::cout << "[Temporal CPU] Candidates after SIFT filter:         " << count_candidates() << std::endl;
     if (dataset->has_gt())
         frame_metrics.stages.push_back({"SIFT", Evaluate_Temporal_Edge_Pairs_on_Quads(temporal_quads_by_kf, keyframe_idx, current_frame_idx, "SIFT Filtering")});
 
     start_time = std::chrono::high_resolution_clock::now();
-    apply_best_nearly_best_filtering_quads(temporal_quads_by_kf, 0.8, "NCC");
+    apply_best_nearly_best_filtering_quads(temporal_quads_by_kf, TEMPORAL_BNB_NCC_THRESHOLD, "NCC");
     end_time = std::chrono::high_resolution_clock::now();
     timing_statistics.time_BNB_NCC = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+    std::cout << "[Temporal CPU] Candidates after BNB-NCC:             " << count_candidates() << std::endl;
     if (dataset->has_gt())
         frame_metrics.stages.push_back({"BNB-NCC", Evaluate_Temporal_Edge_Pairs_on_Quads(temporal_quads_by_kf, keyframe_idx, current_frame_idx, "BNB NCC Filtering")});
 
     start_time = std::chrono::high_resolution_clock::now();
-    apply_best_nearly_best_filtering_quads(temporal_quads_by_kf, 0.8, "SIFT");
+    apply_best_nearly_best_filtering_quads(temporal_quads_by_kf, TEMPORAL_BNB_SIFT_THRESHOLD, "SIFT");
     end_time = std::chrono::high_resolution_clock::now();
     timing_statistics.time_BNB_SIFT = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+    std::cout << "[Temporal CPU] Candidates after BNB-SIFT:            " << count_candidates() << std::endl;
     if (dataset->has_gt())
         frame_metrics.stages.push_back({"BNB-SIFT", Evaluate_Temporal_Edge_Pairs_on_Quads(temporal_quads_by_kf, keyframe_idx, current_frame_idx, "BNB SIFT Filtering")});
 

@@ -336,6 +336,8 @@ float Stereo_Matches_GPU_Pipeline::apply_SIFT_descriptor_filter() {
         d_final_matches_passing_SIFT_filter,
         d_final_count_passing_SIFT_filter,
         d_sift_scores_passing_SIFT_filter,
+        d_ncc_scores_passing_NCC_filter,
+        d_ncc_scores_passing_SIFT_filter,
         img_right_width,
         img_right_height,
         h_match_count_passing_NCC_filter,
@@ -349,23 +351,24 @@ float Stereo_Matches_GPU_Pipeline::apply_SIFT_descriptor_filter() {
 
 float Stereo_Matches_GPU_Pipeline::apply_BNB_NCC_filter() {
 
-    //> Sanity check
-    if (h_match_count_passing_NCC_filter <= 0 || d_ncc_scores_passing_NCC_filter == nullptr) {
-        LOG_ERROR("Something's wrong: zero matches passing NCC filter or NCC scores are not allocated");
+    //> BNB-NCC runs on NCC+SIFT survivors; rank by NCC score carried through SIFT.
+    if (h_match_count_passing_SIFT_filter <= 0
+        || d_final_matches_passing_SIFT_filter == nullptr
+        || d_ncc_scores_passing_SIFT_filter == nullptr) {
+        LOG_ERROR("Something's wrong: zero matches passing SIFT filter or NCC scores after SIFT are not allocated");
         h_match_count_passing_BNB_NCC_filter = 0;
         return -1.0f;
     }
 
-    //> Reuse the best-and-nearly-best filter kernel for NCC similarities
     return apply_best_nearly_best_filter_pipeline(
         device_id,
         h_match_count_passing_BNB_NCC_filter,
-        d_final_matches_passing_NCC_filter,
-        d_ncc_scores_passing_NCC_filter,
+        d_final_matches_passing_SIFT_filter,
+        d_ncc_scores_passing_SIFT_filter,
         d_final_matches_passing_BNB_NCC_filter,
         d_ncc_scores_passing_BNB_NCC_filter,
         d_final_count_passing_BNB_NCC_filter,
-        h_match_count_passing_NCC_filter,
+        h_match_count_passing_SIFT_filter,
         static_cast<int>(num_left_edges_),
         static_cast<float>(BNB_NCC),
         true,
@@ -384,6 +387,18 @@ void Stereo_Matches_GPU_Pipeline::release_merged_refined_outputs()
     if (d_merged_refined_count != nullptr) {
         cudacheck(cudaFree(d_merged_refined_count));
         d_merged_refined_count = nullptr;
+    }
+    if (d_final_left_patches != nullptr) {
+        cudacheck(cudaFree(d_final_left_patches));
+        d_final_left_patches = nullptr;
+    }
+    if (d_final_right_patches != nullptr) {
+        cudacheck(cudaFree(d_final_right_patches));
+        d_final_right_patches = nullptr;
+    }
+    if (d_final_left_sift_descriptors != nullptr) {
+        cudacheck(cudaFree(d_final_left_sift_descriptors));
+        d_final_left_sift_descriptors = nullptr;
     }
 }
 
@@ -507,23 +522,40 @@ float Stereo_Matches_GPU_Pipeline::apply_best_second_ncc_per_left_after_second_N
         d_merged_refined_matches,
         d_merged_refined_count,
         d_ncc_scores_passing_second_NCC_filter,
+        d_left_edges,
+        d_left_patches,
+        d_left_sift_descriptors,
+        d_final_left_patches,
+        d_final_right_patches,
+        d_final_left_sift_descriptors,
         n,
         start,
         stop
     );
+
+    //> The final stereo matches can be retrieved from d_merged_refined_matches with memcpy, e.g.,
+    //  const int n = h_match_count_passing_NCC_filter; 
+    //  std::vector<Merged_Refined_Stereo_Match_GPU> gpu_stereo_matches(static_cast<size_t>(n));
+    //  cudaMemcpy(gpu_stereo_matches.data(), d_merged_refined_matches, static_cast<size_t>(n) * sizeof(Merged_Refined_Stereo_Match_GPU), cudaMemcpyDeviceToHost) );
 }
 
 void Stereo_Matches_GPU_Pipeline::retrieve_stereo_mates( const StereoFrame& frame, std::vector<final_stereo_edge_pair>& out_mates ) const
 {
     out_mates.clear();
 
-    if (d_merged_refined_matches == nullptr || h_match_count_passing_NCC_filter <= 0) {
-        LOG_WARNING("retrieve_stereo_mates: no finalized GPU stereo matches available (pipeline not run yet or empty result)");
+    if (d_merged_refined_matches == nullptr) {
+        LOG_WARNING("retrieve_stereo_mates: no finalized GPU stereo matches available (pipeline not run yet or ownership transferred)");
         return;
     }
 
-    //> h_match_count_passing_NCC_filter is the final number of stereo matches from the GPU pipeline
-    const int n = h_match_count_passing_NCC_filter;
+    int n = h_match_count_passing_NCC_filter;
+    if (d_merged_refined_count != nullptr) {
+        cudacheck(cudaMemcpy(&n, d_merged_refined_count, sizeof(int), cudaMemcpyDeviceToHost));
+    }
+    if (n <= 0) {
+        LOG_WARNING("retrieve_stereo_mates: zero finalized GPU stereo matches");
+        return;
+    }
     std::vector<Merged_Refined_Stereo_Match_GPU> gpu_stereo_matches(static_cast<size_t>(n));
     cudacheck( cudaMemcpy(gpu_stereo_matches.data(), d_merged_refined_matches, static_cast<size_t>(n) * sizeof(Merged_Refined_Stereo_Match_GPU), cudaMemcpyDeviceToHost) );
 
@@ -647,12 +679,8 @@ void Stereo_Matches_GPU_Pipeline::write_finalized_matches_to_file(size_t frame_i
 
 Stereo_Matches_GPU_Pipeline::~Stereo_Matches_GPU_Pipeline()
 {
-    //> h_F aliases fixed storage h_F_row_major_; no need to free it.
-    // release_image_textures();
     release_merged_refined_outputs();
 
-    // delete[] h_left_img;
-    // delete[] h_right_img;
     delete[] h_left_edges;
     delete[] h_right_edges;
     delete[] h_cell_ids;
@@ -675,6 +703,7 @@ Stereo_Matches_GPU_Pipeline::~Stereo_Matches_GPU_Pipeline()
     if (d_final_matches_passing_SIFT_filter) cudacheck( cudaFree(d_final_matches_passing_SIFT_filter) );
     if (d_final_count_passing_SIFT_filter) cudacheck( cudaFree(d_final_count_passing_SIFT_filter) );
     if (d_sift_scores_passing_SIFT_filter) cudacheck( cudaFree(d_sift_scores_passing_SIFT_filter) );
+    if (d_ncc_scores_passing_SIFT_filter) cudacheck( cudaFree(d_ncc_scores_passing_SIFT_filter) );
     if (d_final_matches_passing_BNB_NCC_filter) cudacheck( cudaFree(d_final_matches_passing_BNB_NCC_filter) );
     if (d_final_count_passing_BNB_NCC_filter) cudacheck( cudaFree(d_final_count_passing_BNB_NCC_filter) );
     if (d_ncc_scores_passing_BNB_NCC_filter) cudacheck( cudaFree(d_ncc_scores_passing_BNB_NCC_filter) );

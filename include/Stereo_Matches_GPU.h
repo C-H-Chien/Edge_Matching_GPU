@@ -70,9 +70,14 @@ public:
     int img_left_height, img_right_height;
     int img_left_width, img_right_width;
 
-    float *img, *dev_img;
-    float *Ix, *dev_Ix;
-    float *Iy, *dev_Iy;
+    //> The pointers/data below need to be public since Pipeline requires accessing them
+    Precomputed_Edge_Patches_Photometry* d_final_left_patches = nullptr;
+    Precomputed_Edge_Patches_Photometry* d_final_right_patches = nullptr;
+    Precomputed_Edge_SIFT_Descriptor_GPU* d_final_left_sift_descriptors = nullptr;
+    //> Per-left-edge SIFT table (valid until stereo engine is reset); used to build mate-ordered SIFT for temporal.
+    Precomputed_Edge_SIFT_Descriptor_GPU* d_left_sift_descriptors = nullptr;
+    Merged_Refined_Stereo_Match_GPU* d_merged_refined_matches = nullptr;
+    int h_match_count_passing_NCC_filter = 0;
 
     // timing
     float time_EP;
@@ -85,7 +90,7 @@ private:
     Edge_GPU* h_right_edges = nullptr;
     int* h_cell_ids = nullptr;
     int h_match_count_passing_EP_LP_OR_filters = 0;
-    int h_match_count_passing_NCC_filter = 0;
+    // int h_match_count_passing_NCC_filter = 0;
     int h_match_count_passing_SIFT_filter = 0;
     int h_match_count_passing_BNB_NCC_filter = 0;
     int h_match_count_passing_BNB_SIFT_filter = 0;
@@ -105,20 +110,19 @@ private:
     Match_by_Edge_Index* d_final_matches_passing_EP_LP_OR_filters = nullptr;
     float* d_F = nullptr;
     Precomputed_Edge_Patches_Photometry* d_left_patches = nullptr;
-    Precomputed_Edge_SIFT_Descriptor_GPU* d_left_sift_descriptors = nullptr;
     int* d_final_count_passing_NCC_filter = nullptr;
     Match_by_Edge_Index* d_final_matches_passing_NCC_filter = nullptr;
     float* d_ncc_scores_passing_NCC_filter = nullptr;
     int* d_final_count_passing_SIFT_filter = nullptr;
     Match_by_Edge_Index* d_final_matches_passing_SIFT_filter = nullptr;
     float* d_sift_scores_passing_SIFT_filter = nullptr;
+    float* d_ncc_scores_passing_SIFT_filter = nullptr;
     int* d_final_count_passing_BNB_NCC_filter = nullptr;
     Match_by_Edge_Index* d_final_matches_passing_BNB_NCC_filter = nullptr;
     float* d_ncc_scores_passing_BNB_NCC_filter = nullptr;
     int* d_final_count_passing_BNB_SIFT_filter = nullptr;
     Match_by_Edge_Index* d_final_matches_passing_BNB_SIFT_filter = nullptr;
     float* d_sift_scores_passing_BNB_SIFT_filter = nullptr;
-    Merged_Refined_Stereo_Match_GPU* d_merged_refined_matches = nullptr;
     int* d_merged_refined_count = nullptr;
     Merged_Refined_Stereo_Match_GPU* d_prev_merged_matches = nullptr;
     int* d_prev_merged_count = nullptr;

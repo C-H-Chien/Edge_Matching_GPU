@@ -28,7 +28,7 @@ apply_second_NCC_filter_on_merged_kernel(
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_candidates) return;
 
-    const Merged_Refined_Stereo_Match_GPU candidate_match = d_merged_matches_in[tid];
+    Merged_Refined_Stereo_Match_GPU candidate_match = d_merged_matches_in[tid];
 
     const Precomputed_Edge_Patches_Photometry& pL = d_left_patches[candidate_match.left_edge_idx];
 
@@ -52,6 +52,14 @@ apply_second_NCC_filter_on_merged_kernel(
 
     if (max_ncc > static_cast<float>(NCC_THRESH)) {
         int out_idx = atomicAdd(d_merged_count_out, 1);
+        for (int i = 0; i < TOTAL_NUM_OF_PATCH_PIXELS; ++i) {
+            candidate_match.right_patch.pL_plus[i] = pR_plus[i];
+            candidate_match.right_patch.pL_minus[i] = pR_minus[i];
+        }
+        candidate_match.right_patch.mL_plus = mR_plus;
+        candidate_match.right_patch.vL_plus = vR_plus;
+        candidate_match.right_patch.mL_minus = mR_minus;
+        candidate_match.right_patch.vL_minus = vR_minus;
         d_merged_matches_out[out_idx] = candidate_match;
         d_final_scores[out_idx] = max_ncc;
     }

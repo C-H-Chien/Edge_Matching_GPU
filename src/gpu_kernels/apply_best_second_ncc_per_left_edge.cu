@@ -46,8 +46,14 @@ __global__ void fill_sort_rows_for_best_second_ncc_kernel(
 __global__ void compact_sorted_best_per_left_kernel(
     const SortRow* __restrict__ d_sorted,
     const Merged_Refined_Stereo_Match_GPU* __restrict__ d_src_matches,
+    const Edge_GPU* __restrict__ d_left_edges,
+    const Precomputed_Edge_Patches_Photometry* __restrict__ d_left_patches,
+    const Precomputed_Edge_SIFT_Descriptor_GPU* __restrict__ d_left_sift_descriptors,
     int num_candidates,
     Merged_Refined_Stereo_Match_GPU* __restrict__ d_dst_matches,
+    Precomputed_Edge_Patches_Photometry* __restrict__ d_dst_left_patches,
+    Precomputed_Edge_Patches_Photometry* __restrict__ d_dst_right_patches,
+    Precomputed_Edge_SIFT_Descriptor_GPU* __restrict__ d_dst_left_sift_descriptors,
     int* __restrict__ d_out_count)
 {
     //> Each thread is responsible for one candidate match of the sorted array
@@ -63,7 +69,18 @@ __global__ void compact_sorted_best_per_left_kernel(
         return;
     
     const int out_idx = atomicAdd(d_out_count, 1);
-    d_dst_matches[out_idx] = d_src_matches[d_sorted[tid].candidate_match_idx];
+    Merged_Refined_Stereo_Match_GPU match = d_src_matches[d_sorted[tid].candidate_match_idx];
+    const int left_idx = match.left_edge_idx;
+    const Edge_GPU left_edge = d_left_edges[left_idx];
+    match.left_location_x = left_edge.location_x;
+    match.left_location_y = left_edge.location_y;
+    match.left_orientation = left_edge.orientation;
+    match.left_patch = d_left_patches[left_idx];
+    match.left_sift_descriptor = d_left_sift_descriptors[left_idx];
+    d_dst_matches[out_idx] = match;
+    d_dst_left_patches[out_idx] = match.left_patch;
+    d_dst_right_patches[out_idx] = match.right_patch;
+    d_dst_left_sift_descriptors[out_idx] = match.left_sift_descriptor;
 }
 
 float apply_best_second_ncc_per_left_edge_pipeline(
@@ -72,6 +89,12 @@ float apply_best_second_ncc_per_left_edge_pipeline(
     Merged_Refined_Stereo_Match_GPU*& d_merged_matches,
     int*& d_merged_count,
     float*& d_second_ncc_scores,
+    const Edge_GPU* d_left_edges,
+    const Precomputed_Edge_Patches_Photometry* d_left_patches,
+    const Precomputed_Edge_SIFT_Descriptor_GPU* d_left_sift_descriptors,
+    Precomputed_Edge_Patches_Photometry*& d_final_left_patches,
+    Precomputed_Edge_Patches_Photometry*& d_final_right_patches,
+    Precomputed_Edge_SIFT_Descriptor_GPU*& d_final_left_sift_descriptors,
     int num_candidates,
     cudaEvent_t start,
     cudaEvent_t stop)
@@ -88,6 +111,11 @@ float apply_best_second_ncc_per_left_edge_pipeline(
         h_match_count_out = 0;
         return 0.0f;
     }
+    if (d_left_edges == nullptr || d_left_patches == nullptr || d_left_sift_descriptors == nullptr) {
+        LOG_ERROR("apply_best_second_ncc_per_left_edge_pipeline: null left edges, patches, or SIFT descriptors");
+        h_match_count_out = 0;
+        return 0.0f;
+    }
 
     //> Start the CUDA event timer
     cudacheck(cudaEventRecord(start));
@@ -98,6 +126,18 @@ float apply_best_second_ncc_per_left_edge_pipeline(
 
     Merged_Refined_Stereo_Match_GPU* d_compacted = nullptr;
     cudacheck(cudaMalloc(&d_compacted, static_cast<size_t>(num_candidates) * sizeof(Merged_Refined_Stereo_Match_GPU)));
+
+    Precomputed_Edge_Patches_Photometry* d_compacted_left_patches = nullptr;
+    cudacheck(cudaMalloc(&d_compacted_left_patches,
+                         static_cast<size_t>(num_candidates) * sizeof(Precomputed_Edge_Patches_Photometry)));
+
+    Precomputed_Edge_Patches_Photometry* d_compacted_right_patches = nullptr;
+    cudacheck(cudaMalloc(&d_compacted_right_patches,
+                         static_cast<size_t>(num_candidates) * sizeof(Precomputed_Edge_Patches_Photometry)));
+
+    Precomputed_Edge_SIFT_Descriptor_GPU* d_compacted_left_sift_descriptors = nullptr;
+    cudacheck(cudaMalloc(&d_compacted_left_sift_descriptors,
+                         static_cast<size_t>(num_candidates) * sizeof(Precomputed_Edge_SIFT_Descriptor_GPU)));
 
     int* d_compact_count = nullptr;
     cudacheck(cudaMalloc(&d_compact_count, sizeof(int)));
@@ -120,7 +160,11 @@ float apply_best_second_ncc_per_left_edge_pipeline(
 
     //> The second kernel is to compact the sorted sort rows into the compacted matches array
     //> This assigns one thread "per candidate match" as well
-    compact_sorted_best_per_left_kernel<<<num_blocks, threads_per_block>>>( d_sort_rows, d_merged_matches, num_candidates, d_compacted, d_compact_count );
+    compact_sorted_best_per_left_kernel<<<num_blocks, threads_per_block>>>(
+        d_sort_rows, d_merged_matches, d_left_edges, d_left_patches, d_left_sift_descriptors,
+        num_candidates, d_compacted, d_compacted_left_patches, d_compacted_right_patches,
+        d_compacted_left_sift_descriptors,
+        d_compact_count);
     cudacheck(cudaPeekAtLastError());
     cudacheck(cudaDeviceSynchronize());
 
@@ -141,9 +185,24 @@ float apply_best_second_ncc_per_left_edge_pipeline(
     d_merged_count = nullptr;
     cudacheck(cudaFree(d_second_ncc_scores));
     d_second_ncc_scores = nullptr;
+    if (d_final_left_patches != nullptr) {
+        cudacheck(cudaFree(d_final_left_patches));
+        d_final_left_patches = nullptr;
+    }
+    if (d_final_right_patches != nullptr) {
+        cudacheck(cudaFree(d_final_right_patches));
+        d_final_right_patches = nullptr;
+    }
+    if (d_final_left_sift_descriptors != nullptr) {
+        cudacheck(cudaFree(d_final_left_sift_descriptors));
+        d_final_left_sift_descriptors = nullptr;
+    }
 
     d_merged_matches = d_compacted;
     d_merged_count = d_compact_count;
+    d_final_left_patches = d_compacted_left_patches;
+    d_final_right_patches = d_compacted_right_patches;
+    d_final_left_sift_descriptors = d_compacted_left_sift_descriptors;
 
     return elapsed_ms;
 }

@@ -23,8 +23,8 @@ bool edge_pair_passes_orientation_prefilter_deg(float ori_left, float ori_right,
     return false;
 }
 
-__device__ 
-void 
+__device__ __forceinline__
+void
 eval_edges_in_grid_cells(
     Edge_GPU left_edge,
     int cx, int cy, int grid_width, 

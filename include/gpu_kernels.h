@@ -31,22 +31,15 @@ struct CUDA_Texture_Wrapper {
     cudaTextureObject_t texObj;
 };
 
-//> This struct is per edge pair hypothesis used in the edge location refinement step
+//> Per edge-pair hypothesis after photometric refinement (stereo right-side refine;
+//> temporal quads store refined CF-left position in refined_right_* for post-refine NCC).
 struct Refined_Edge_Hypothesis_Match_GPU {
-    int left_edge_idx;
-    int right_edge_idx;
+    int left_edge_idx;              //> kf_mate_idx in temporal pipeline
+    int right_edge_idx;             //> cf_mate_idx in temporal pipeline
     float refined_right_x;
     float refined_right_y;
     float photometric_rms;
     float source_right_orientation;
-};
-
-//> One consolidated match per distance-cluster after merge (no TOED right index — geometry is fused).
-struct Merged_Refined_Stereo_Match_GPU {
-    int left_edge_idx;
-    float merged_right_x;
-    float merged_right_y;
-    float merged_right_orientation;
 };
 
 //> One valid BNB-SIFT candidate after 2D Gauss-Newton refinement on both temporal sides.
@@ -72,6 +65,21 @@ struct Precomputed_Edge_Patches_Photometry {
 struct Precomputed_Edge_SIFT_Descriptor_GPU {
     float pL_plus[SIFT_DESCRIPTOR_DIM];
     float pL_minus[SIFT_DESCRIPTOR_DIM];
+};
+
+//> One consolidated final stereo match, including the precomputed left-side data
+//> gathered from the original left_edge_idx.
+struct Merged_Refined_Stereo_Match_GPU {
+    int left_edge_idx;
+    float left_location_x;
+    float left_location_y;
+    float left_orientation;
+    float merged_right_x;
+    float merged_right_y;
+    float merged_right_orientation;
+    Precomputed_Edge_Patches_Photometry left_patch;
+    Precomputed_Edge_Patches_Photometry right_patch;
+    Precomputed_Edge_SIFT_Descriptor_GPU left_sift_descriptor;
 };
 
 inline CUDA_Texture_Wrapper create_CUDA_texture_object_for_img(float* h_img, int img_width, int img_height) 
@@ -126,6 +134,23 @@ float edge_spatial_map_thrust_pipeline(
     int             num_of_grid_cells_in_height,
     cudaEvent_t     start,
     cudaEvent_t     stop
+);
+
+//> Build a CF/KF-left spatial grid from final stereo mates (mate index == array index).
+//> Uses left_location_* stored in each Merged_Refined_Stereo_Match_GPU.
+float temporal_stereo_mate_spatial_map_device_thrust_pipeline(
+    int                                  device_id,
+    const Merged_Refined_Stereo_Match_GPU* d_stereo_matches,
+    int*                                 d_cell_ids,
+    int*                                 d_edge_indices,
+    int*                                 d_cell_start_idx,
+    int*                                 d_num_of_edges_in_cell,
+    std::size_t                          num_stereo_mates,
+    int                                  total_num_of_grid_cells,
+    int                                  num_of_grid_cells_in_width,
+    int                                  num_of_grid_cells_in_height,
+    cudaEvent_t                          start,
+    cudaEvent_t                          stop
 );
 
 //> GPU kernel pipeline for epipolar rasterization (defined in epipolar_rasterization.cu)
@@ -196,6 +221,8 @@ float apply_SIFT_descriptor_filter_pipeline(
     Match_by_Edge_Index*        &d_final_matches_passing_SIFT_filter,
     int*                        &d_final_count_passing_SIFT_filter,
     float*                      &d_sift_scores_out,
+    const float*                d_ncc_scores_in,
+    float*&                     d_ncc_scores_out,
     /* Others */
     int                         right_img_width,
     int                         right_img_height,
@@ -206,8 +233,6 @@ float apply_SIFT_descriptor_filter_pipeline(
 );
 
 //> GPU kernel pipeline for apply NCC filter (defined in apply_NCC_on_the_fly.cu)
-//> Optional carry-through: pass d_input_passthrough_scores + d_output_passthrough_scores_ptr
-//> to propagate a prior-stage score (e.g. left-left NCC) in parallel with survivors.
 float apply_NCC_filter_pipeline(
     int                         device_id,
     int                         &h_NCC_match_count_out,
@@ -225,9 +250,7 @@ float apply_NCC_filter_pipeline(
     int                         num_candidates,
     cudaEvent_t                 start,
     cudaEvent_t                 stop,
-    float                       ncc_threshold,
-    const float*                d_input_passthrough_scores    = nullptr,
-    float**                     d_output_passthrough_scores_ptr = nullptr
+    float                       ncc_threshold
 );
 
 //> GPU kernel pipeline for Best-Nearly-Best filtering (defined in apply_best_nearly_best_filter.cu)
@@ -284,25 +307,88 @@ float apply_second_NCC_filter_on_merged_edges_pipeline(
     cudaEvent_t                 stop
 );
 
+//> Apply left-left + right-right NCC on temporal quad candidates (defined in apply_temporal_quad_ncc_filter.cu).
+//> Uses mate-indexed precomputed patches; both sides must pass
+float apply_temporal_quad_ncc_filter_pipeline(
+    int                         device_id,
+    int                         &h_match_count_out,
+    const Match_by_Edge_Index*  d_candidates,
+    const Precomputed_Edge_Patches_Photometry* d_kf_left_patches,
+    const Precomputed_Edge_Patches_Photometry* d_kf_right_patches,
+    const Precomputed_Edge_Patches_Photometry* d_cf_left_patches,
+    const Precomputed_Edge_Patches_Photometry* d_cf_right_patches,
+    Match_by_Edge_Index*&       d_final_matches_out,
+    int*&                       d_final_count_out,
+    float*&                     d_ncc_left_scores_out,
+    float*&                     d_ncc_right_scores_out,
+    int                         num_candidates,
+    int                         num_kf_mates,
+    int                         num_cf_mates,
+    cudaEvent_t                 start,
+    cudaEvent_t                 stop
+);
+
+//> Combined left-left + right-right SIFT for temporal quads (defined in apply_temporal_quad_sift_filter.cu).
+//> Left-left uses mate-indexed precomputed descriptors; right-right extracts SIFT on-the-fly at merged_right_*.
+float apply_temporal_quad_sift_filter_pipeline(
+    int                         device_id,
+    int                         &h_match_count_out,
+    const Match_by_Edge_Index*  d_candidates,
+    const Precomputed_Edge_SIFT_Descriptor_GPU* d_kf_left_sift,
+    const Precomputed_Edge_SIFT_Descriptor_GPU* d_cf_left_sift,
+    const Merged_Refined_Stereo_Match_GPU* d_kf_stereo_matches,
+    const Merged_Refined_Stereo_Match_GPU* d_cf_stereo_matches,
+    cudaTextureObject_t         kf_right_tex,
+    cudaTextureObject_t         cf_right_tex,
+    int                         right_img_width,
+    int                         right_img_height,
+    Match_by_Edge_Index*&       d_final_matches_out,
+    int*&                       d_final_count_out,
+    float*&                     d_sift_left_scores_out,
+    float*&                     d_sift_right_scores_out,
+    const float*                d_ncc_left_scores_in,
+    float*&                     d_ncc_left_scores_out,
+    int                         num_candidates,
+    int                         num_kf_mates,
+    int                         num_cf_mates,
+    cudaEvent_t                 start,
+    cudaEvent_t                 stop
+);
+
+//> BNB per kf_mate_idx for temporal quads (defined in apply_temporal_quad_bnb_filter.cu).
+//> First computes the best score per KF mate, then filters candidates in parallel.
+float apply_temporal_quad_bnb_filter_pipeline(
+    int                         device_id,
+    int                         &h_match_count_out,
+    const Match_by_Edge_Index*  d_candidates,
+    const float*                d_rank_scores,
+    const float*                d_carry_scores,
+    Match_by_Edge_Index*&       d_out_matches,
+    float*&                     d_out_carry_scores,
+    int*&                       d_out_count,
+    int                         num_candidates,
+    int                         num_kf_mates,
+    float                       ratio_threshold,
+    bool                        higher_is_better,
+    cudaEvent_t                 start,
+    cudaEvent_t                 stop
+);
+
 //> Temporal quad candidate generation: for each KF stereo mate, queries the CF-left spatial grid
 //> within TEMPORAL_SEARCH_RADIUS_PIXELS and checks whether the CF-right mate is also within radius.
-//> Orientation filter (TEMPORAL_ORIENTATION_THRESH_DEG) is applied on both sides.
+//> Orientation filter is applied on both sides.
 //> Emits Match_by_Edge_Index { left_edge_idx = kf_mate_idx, right_edge_idx = cf_mate_idx }.
 //> (defined in temporal_candidate_generation.cu)
 float temporal_candidate_generation_pipeline(
     int                         device_id,
-    const Edge_GPU*             d_kf_left_edges,
-    const Edge_GPU*             d_kf_right_edges,
-    int                         num_kf_mates,
-    const Edge_GPU*             d_cf_left_edges,
-    const Edge_GPU*             d_cf_right_edges,
+    const Merged_Refined_Stereo_Match_GPU* d_kf_stereo_matches,
+    const Merged_Refined_Stereo_Match_GPU* d_cf_stereo_matches,
     const int*                  d_cf_left_edge_indices,
     const int*                  d_cf_left_cell_start_idx,
     const int*                  d_cf_left_num_in_cell,
     int                         grid_W,
     int                         grid_H,
-    float                       search_radius,
-    float                       orient_thresh_deg,
+    int                         num_kf_mates,
     Match_by_Edge_Index*        d_candidates,
     int*                        d_candidate_count,
     int&                        h_candidate_count_out,
@@ -318,6 +404,12 @@ float apply_best_second_ncc_per_left_edge_pipeline(
     Merged_Refined_Stereo_Match_GPU*& d_merged_matches,
     int*&                       d_merged_count,
     float*&                     d_second_ncc_scores,
+    const Edge_GPU*             d_left_edges,
+    const Precomputed_Edge_Patches_Photometry* d_left_patches,
+    const Precomputed_Edge_SIFT_Descriptor_GPU* d_left_sift_descriptors,
+    Precomputed_Edge_Patches_Photometry*& d_final_left_patches,
+    Precomputed_Edge_Patches_Photometry*& d_final_right_patches,
+    Precomputed_Edge_SIFT_Descriptor_GPU*& d_final_left_sift_descriptors,
     int                         num_candidates,
     cudaEvent_t                 start,
     cudaEvent_t                 stop
@@ -332,23 +424,42 @@ float temporal_photometric_refine_and_cluster_pipeline(
     int                                                 num_bnb_sift,
     const Precomputed_Edge_Patches_Photometry*          d_kf_left_patches,
     const Precomputed_Edge_Patches_Photometry*          d_kf_right_patches,
-    const Edge_GPU*                                     d_kf_left_edges,
-    const Edge_GPU*                                     d_kf_right_edges,
-    const Edge_GPU*                                     d_cf_left_edges,
-    const Edge_GPU*                                     d_cf_right_edges,
+    const Merged_Refined_Stereo_Match_GPU*              d_kf_stereo_matches,
+    const Merged_Refined_Stereo_Match_GPU*              d_cf_stereo_matches,
     cudaTextureObject_t                                 cf_left_tex,
     cudaTextureObject_t                                 cf_right_tex,
-    int                                                 img_w,
-    int                                                 img_h,
+    int                                                 cf_left_img_w,
+    int                                                 cf_left_img_h,
+    int                                                 cf_right_img_w,
+    int                                                 cf_right_img_h,
     //> outputs (lazily allocated by the callee)
     Temporal_Refined_Match_GPU*&                        d_refined_matches,
     int*&                                               d_refined_count,
     int&                                                h_refined_count_out,
-    Match_by_Edge_Index*&                               d_clustered_matches,
+    Refined_Edge_Hypothesis_Match_GPU*&                 d_clustered_matches,
     int*&                                               d_clustered_count,
     int&                                                h_clustered_count_out,
     cudaEvent_t                                         start,
     cudaEvent_t                                         stop
 );
+
+//> Mate-ordered left SIFT for temporal quads when compact stereo output is missing
+//> (defined in extract_mate_ordered_left_sift.cu)
+void extract_mate_ordered_left_sift_pipeline(
+    int device_id,
+    const Merged_Refined_Stereo_Match_GPU* d_merged,
+    const Precomputed_Edge_SIFT_Descriptor_GPU* d_full_left_sift,
+    int num_mates,
+    Precomputed_Edge_SIFT_Descriptor_GPU*& d_out_sift);
+
+//> Mate-ordered left SIFT sampled from a left image texture at each mate's left geometry.
+void precompute_mate_left_sift_from_texture_pipeline(
+    int device_id,
+    const Merged_Refined_Stereo_Match_GPU* d_mates,
+    cudaTextureObject_t left_tex,
+    int left_width,
+    int left_height,
+    int num_mates,
+    Precomputed_Edge_SIFT_Descriptor_GPU*& d_out_sift);
 
 #endif // GPU_KERNELS_H

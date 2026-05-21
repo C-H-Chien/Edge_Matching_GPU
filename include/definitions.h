@@ -25,6 +25,13 @@
 #define NCC_THRESH (0.6)
 #define SIFT_THRESHOLD (500.0)
 
+//> Temporal edge matching settings
+#define TEMPORAL_SEARCH_RADIUS_PIXELS (30.0)
+#define TEMPORAL_NCC_THRESHOLD (0.8)
+#define TEMPORAL_SIFT_THRESHOLD (200.0)
+#define TEMPORAL_BNB_NCC_THRESHOLD (0.8)
+#define TEMPORAL_BNB_SIFT_THRESHOLD (0.8)
+
 #define EPIP_TANGENCY_DISPL_THRESH (3) //> in pixels
 #define LOCATION_PERTURBATION (0.4)    //> in pixels
 #define ORIENT_PERTURBATION (0.174533) //> in radians. 0.174533 is 10 degrees

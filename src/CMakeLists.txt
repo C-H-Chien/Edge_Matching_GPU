@@ -17,6 +17,7 @@ set (control_sources
 if(ENABLE_CUDA)
     list(APPEND control_sources
         gpu_kernels/spatial_grid_mapping.cu
+        gpu_kernels/temporal_spatial_grid_mapping.cu
         gpu_kernels/epipolar_rasterization.cu
         gpu_kernels/precompute_left_edge_patches_photometry.cu
         gpu_kernels/precompute_left_edge_sift_descriptors.cu
@@ -27,8 +28,11 @@ if(ENABLE_CUDA)
         gpu_kernels/apply_second_NCC_filter.cu
         gpu_kernels/apply_best_second_ncc_per_left_edge.cu
         gpu_kernels/temporal_candidate_generation.cu
-        gpu_kernels/apply_precomputed_sift_filter.cu
+        gpu_kernels/apply_temporal_quad_ncc_filter.cu
+        gpu_kernels/apply_temporal_quad_sift_filter.cu
+        gpu_kernels/apply_temporal_quad_bnb_filter.cu
         gpu_kernels/temporal_photometric_refine_and_cluster.cu
+        gpu_kernels/extract_mate_ordered_left_sift.cu
     )
 endif()
 

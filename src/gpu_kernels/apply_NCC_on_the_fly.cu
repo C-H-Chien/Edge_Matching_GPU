@@ -138,14 +138,16 @@ float apply_NCC_filter_pipeline(
     cudacheck(cudaEventRecord(start));
 
     //> atomicAdd target must be zero-initialized before the kernel launch
-    cudacheck(cudaMemset(d_match_count_passing_NCC_filter, 0, sizeof(int)));    
+    cudacheck(cudaMemset(d_match_count_passing_NCC_filter, 0, sizeof(int)));
 
-    //> Launch the NCC filter kernel
+    //> Allocate output NCC scores buffer (sized to worst-case = all candidates survive)
     if (num_candidates > 0) {
         cudacheck(cudaMalloc(&d_ncc_scores_out, static_cast<size_t>(num_candidates) * sizeof(float)));
-    } else {
+    } 
+    else {
         d_ncc_scores_out = nullptr;
     }
+
     apply_NCC_filter_kernel_launcher(device_id, d_candidate_matches, d_left_edges, d_right_edges,
                                      d_final_matches_passing_NCC_filter, d_match_count_passing_NCC_filter,
                                      d_ncc_scores_out, d_left_patches, right_tex, num_candidates, ncc_threshold);
