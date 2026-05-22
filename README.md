@@ -1,8 +1,12 @@
-# GPU-Based Edge Feature Matching
+# GPU-Based Edge Feature Matching on Stereo Images
 ## Research @ LEMS, Brown University
-This repository is home to the GPU implementation that constructs edge correspondences from _(i)_ a stereo image pair and _(ii)_ from temporal stereo images to arrive at quadtiplet edge correspondences (or "quads"), aiming to address the super slow computation time from the CPU implementation. This is one of the building blocks of [QuadEdge-VO](https://github.com/Brown-LEMS/Edge_Based_Visual_Odometry), a visual odometry framework using edge quads. Thus, in our temporal edge matching, we often say it construct edge correspondences between a "key (stereo) frame" and the "current (stereo) frame".
+This repository is home to the GPU implementation that constructs edge correspondences from _(i)_ a stereo image pair and _(ii)_ from temporal stereo images to arrive at quadtiplet edge correspondences (or "quads"), aiming to address the super slow computation time from the CPU implementation. This is one of the building blocks of [QuadEdge-VO](https://github.com/Brown-LEMS/Edge_Based_Visual_Odometry), a visual odometry framework using edge quads. Thus, in our temporal edge matching, we often say it construct edge correspondences between a "key (stereo) frame (KF)" and the "current (stereo) frame (CF)".
 
-Note that this code **does not** require a rectified stereo image pair, nor needs to have the same image resolution for left and right cameras. This is the case in the ETH3D-SLAM dataset, and we use is as a demonstration here.
+Note that this code **does not** require a rectified stereo image pair, nor needs to have the same image resolution for left and right cameras. This is the case in the ETH3D-SLAM dataset, and we use is as a demonstration here. Below is an example of two stereo images from ETH3D SLAM benchmark `cables_2` sequence. The unrectified left and right image sizes are `742x464` and `739x458`. Each edge is presented as a location (point) an an orientation (line at the point), and the connections are the correspondences. 100 quads out of 8170 quads are randomly selected for visualization.
+
+![GPU temporal quad matches (keyframe 0 -> current frame 1)](visualization/gpu_temporal_quad_matches_kf0_cf1_viz.png)
+
+The runtime of edge matching across a stereo image pair and temporal stereo images vary by the image size, number of detected edges, candidate matches, _etc_, but in general, when running the CPU version using 32-core and NVIDIA GeForce RTX 3090 GPU, the GPU version gives around 100x speedup.
 
 ## Dependencies
 Running on both CPU and GPU requires the following libraries/packages:
@@ -25,9 +29,9 @@ You shall find executive files under the ``bin`` folder. Note that CUDA sources 
 For Brown University users, a shell script `load_oscars_modules.sh` is provided so a simple command `$ source ./load_oscars_modules.sh` would automatically load all the necessary modules to build the code.
 
 ### Execute
-Run the execution file `main_VO` with a specified YAML configuration file:
+Run the execution file `main_edge_matching` with a specified YAML configuration file:
 ```bash
-./bin/main_VO --config_file ./your-config-file.yaml
+./bin/main_edge_matching --config_file ./config/your-config-file.yaml
 ```
 where the configuration file ``your-config-file.yaml`` can be customized depending on the dataset in use. See ``.yaml`` files under the ``config`` folder for more information. <br />
 
@@ -49,8 +53,11 @@ The third-order edge detector is borrowed from my [another GitHub repository](ht
 Optional host-side export (`retrieve_stereo_mates`, `retrieve_final_matches`, output files) is used for logging and visualization; the hot path can stay entirely on the device between stereo and temporal steps.
 
 ## Example
-TODO
-
+Run the ETH3D dataset SLAM banchmark sequence `cables_2` by
+```bash
+./bin/main_edge_matching --config_file ./config/eth3d_slam.yaml
+```
+and the output quads will be written into a file located under the `outputs/` folder. You can visualize the quads by running the python code `visualization/visualize_quads.py`. See the input arguments of that python code for more information. 
 
 ## Author
 Chiang-Heng Chien (chiang-heng_chien@brown.edu)
