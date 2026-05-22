@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <math.h>
 #include <fstream>
@@ -6,6 +7,7 @@
 #include <stdexcept>
 #include <cstring>
 #include <limits>
+#include <unordered_map>
 #include <vector>
 #include <cuda_runtime.h>
 #include <cuda_runtime_api.h>
@@ -430,6 +432,40 @@ float Temporal_Matches_GPU_Pipeline::apply_photometric_refine_and_cluster()
 // ===========================================================================
 // retrieve_final_matches / retrieve_final_hypothesis_matches
 // ===========================================================================
+namespace {
+
+// Rank final quads by ambiguity: KF mates with fewer surviving quads come first
+// (1 quad per KF = highest rank / most unambiguous).
+void sort_final_quads_by_kf_mate_count(std::vector<Refined_Edge_Hypothesis_Match_GPU>& matches)
+{
+    if (matches.size() <= 1) {
+        return;
+    }
+
+    std::unordered_map<int, int> quads_per_kf;
+    quads_per_kf.reserve(matches.size());
+    for (const auto& m : matches) {
+        if (m.left_edge_idx >= 0) {
+            ++quads_per_kf[m.left_edge_idx];
+        }
+    }
+
+    std::stable_sort(matches.begin(), matches.end(),
+        [&quads_per_kf](const Refined_Edge_Hypothesis_Match_GPU& a, const Refined_Edge_Hypothesis_Match_GPU& b) {
+            const int count_a = quads_per_kf[a.left_edge_idx];
+            const int count_b = quads_per_kf[b.left_edge_idx];
+            if (count_a != count_b) {
+                return count_a < count_b;
+            }
+            if (a.left_edge_idx != b.left_edge_idx) {
+                return a.left_edge_idx < b.left_edge_idx;
+            }
+            return a.right_edge_idx < b.right_edge_idx;
+        });
+}
+
+}  // namespace
+
 void Temporal_Matches_GPU_Pipeline::retrieve_final_hypothesis_matches(
     std::vector<Refined_Edge_Hypothesis_Match_GPU>& out_matches) const
 {
@@ -442,6 +478,8 @@ void Temporal_Matches_GPU_Pipeline::retrieve_final_hypothesis_matches(
     cudacheck(cudaMemcpy(out_matches.data(), d_clustered_matches,
                          static_cast<size_t>(h_match_count_after_cluster) * sizeof(Refined_Edge_Hypothesis_Match_GPU),
                          cudaMemcpyDeviceToHost));
+
+    sort_final_quads_by_kf_mate_count(out_matches);
 }
 
 void Temporal_Matches_GPU_Pipeline::retrieve_final_matches(
@@ -519,7 +557,8 @@ void Temporal_Matches_GPU_Pipeline::write_finalized_matches_to_file(
     }
     ofs.close();
     std::cout << "[Temporal GPU] Wrote " << hypotheses.size()
-              << " temporal quad matches to " << fname << std::endl;
+              << " temporal quad matches to " << fname
+              << " (sorted by quads-per-KF-mate ascending; highest rank = most unambiguous)" << std::endl;
 }
 
 void Temporal_Matches_GPU_Pipeline::free_lazy_allocations()

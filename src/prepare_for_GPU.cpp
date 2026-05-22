@@ -84,7 +84,7 @@ Prepare_For_GPU_Pipeline::Prepare_For_GPU_Pipeline(Dataset::Ptr dataset, const S
             "cudaGetDeviceCount returned success but reported 0 CUDA devices (runtime version " + std::to_string(runtime_ver) + "). " + 
             "If nvidia-smi lists a GPU, common causes are: (i) running outside your GPU Slurm allocation in a shell that cannot " + 
             "access /dev/nvidia*; (ii) CUDA_VISIBLE_DEVICES empty or invalid; (iii) cluster cgroup denies GPU to this process—launch " + 
-            "main_VO from the same interactive GPU session where nvidia-smi works.");
+            "main_edge_matching from the same interactive GPU session where nvidia-smi works.");
     }
     if (device_id < 0 || device_id >= n_cuda_devices) {
         throw std::runtime_error(

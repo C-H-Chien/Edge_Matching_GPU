@@ -115,7 +115,7 @@
 #define LOG_TEST(test_msg) printf("\033[1;30m[TEST] %s\033[0m\n", std::string(test_msg).c_str());
 #define LOG_FILE_ERROR(err_msg) printf("\033[1;31m[ERROR] File %s not found!\033[0m\n", std::string(err_msg).c_str());
 #define LOG_TRACE(msg) std::cout << "\033[1;30m[TRACE] " << __func__ << ":" << __LINE__ << " " << msg << "\033[0m" << std::endl;
-#define LOG_PRINT_HELP_MESSAGE printf("Usage: ./main_VO [flag] [argument]\n\n"                 \
+#define LOG_PRINT_HELP_MESSAGE printf("Usage: ./main_edge_matching [flag] [argument]\n\n"                 \
                                       "options:\n"                                             \
                                       "  -h, --help         show this help message and exit\n" \
                                       "  -c, --config_file  path to the the configuration file\n");

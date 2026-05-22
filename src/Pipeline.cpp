@@ -44,14 +44,14 @@ bool Pipeline::Add_Stereo_Frame()
         case PipelineStatus::STATUS_GET_STEREO_EDGE_CORRESPONDENCES:
             //> Get stereo edge correspondences
             LOG_STATUS("GET_STEREO_EDGE_CORRESPONDENCES");
-            get_Stereo_Edge_Correspondences();
-            // get_Stereo_Edge_Correspondences_GPU();
+            // get_Stereo_Edge_Correspondences();
+            get_Stereo_Edge_Correspondences_GPU();
             break;
         case PipelineStatus::STATUS_GET_TEMPORAL_EDGE_CORRESPONDENCES:
             //> Get temporal edge correspondences (keyframe <-> current frame)
             LOG_STATUS("GET_TEMPORAL_EDGE_CORRESPONDENCES");
-            get_Temporal_Edge_Correspondences();
-            // get_Temporal_Edge_Correspondences_GPU();
+            // get_Temporal_Edge_Correspondences();
+            get_Temporal_Edge_Correspondences_GPU();
             exit(1);
             break;
         case PipelineStatus::STATUS_SYSTEM_EXIT:

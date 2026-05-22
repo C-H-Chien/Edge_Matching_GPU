@@ -13,11 +13,11 @@
 #include <glog/logging.h>
 #endif
 
-//> usage: (Under the bin file) ./main_VO --config_file ../config/eth3d_cable_2.yaml
+//> usage: (Under the bin file) ./main_edge_matching --config_file ../config/eth3d_slam.yaml
 
 //> Define default values for the input argument
 #if USE_GLOGS
-DEFINE_string(config_file, "../config/eth3d_cable_2.yaml", "config file path");
+DEFINE_string(config_file, "../config/eth3d_slam.yaml", "config file path");
 #endif
 
 int main(int argc, char **argv)
@@ -157,13 +157,13 @@ int main(int argc, char **argv)
 	std::string temporal_gpu_timings_filename = output_dir + "/gpu_timings_temporal_matches.txt";
 	std::ofstream temporal_gpu_timings_file(temporal_gpu_timings_filename);
 	for (size_t i = 0; i < quad_vo_sys->collect_temporal_GPU_times.size(); i++) {
-		temporal_gpu_timings_file << quad_vo_sys->collect_temporal_GPU_times[i].time_build_cf_left_spatial_grid << " " 
-		<< quad_vo_sys->collect_temporal_GPU_times[i].time_precompute_kf_left_patches + quad_vo_sys->collect_temporal_GPU_times[i].time_precompute_kf_right_patches << " " 
-		<< quad_vo_sys->collect_temporal_GPU_times[i].time_temporal_candidate_generation << " " 
-		<< quad_vo_sys->collect_temporal_GPU_times[i].time_apply_ncc_left_filter + quad_vo_sys->collect_temporal_GPU_times[i].time_apply_ncc_right_filter << " " 
-		<< quad_vo_sys->collect_temporal_GPU_times[i].time_apply_sift_left_filter + quad_vo_sys->collect_temporal_GPU_times[i].time_apply_sift_right_filter << " " 
-		<< quad_vo_sys->collect_temporal_GPU_times[i].time_apply_bnb_ncc_filter << " " 
-		<< quad_vo_sys->collect_temporal_GPU_times[i].time_apply_bnb_sift_filter << " " 
+		temporal_gpu_timings_file << quad_vo_sys->collect_temporal_GPU_times[i].time_build_cf_left_spatial_grid << " "
+		<< quad_vo_sys->collect_temporal_GPU_times[i].time_temporal_candidate_generation << " "
+		<< quad_vo_sys->collect_temporal_GPU_times[i].time_apply_ncc_filter << " "
+		<< quad_vo_sys->collect_temporal_GPU_times[i].time_apply_sift_filter << " "
+		<< quad_vo_sys->collect_temporal_GPU_times[i].time_apply_bnb_ncc_filter << " "
+		<< quad_vo_sys->collect_temporal_GPU_times[i].time_apply_bnb_sift_filter << " "
+		<< quad_vo_sys->collect_temporal_GPU_times[i].time_apply_photometric_refine << " "
 		<< quad_vo_sys->collect_temporal_GPU_times[i].total_time << std::endl;
 	}
 	temporal_gpu_timings_file.close();

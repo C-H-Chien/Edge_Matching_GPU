@@ -76,7 +76,7 @@ public:
     //> Run the full GPU temporal quad filter pipeline for KF->CF
     Temporal_Matches_GPU_Timing_Statistics get_temporal_edge_matching_GPU( );
 
-    //> Copy the final (kf_mate_idx, cf_mate_idx) pairs to a host vector.
+    //> Copy final temporal quads to host, sorted by ascending quads-per-KF-mate (1 = highest rank).
     void retrieve_final_matches(std::vector<Match_by_Edge_Index>& out_matches) const;
     void retrieve_final_hypothesis_matches(std::vector<Refined_Edge_Hypothesis_Match_GPU>& out_matches) const;
 
