@@ -57,7 +57,8 @@ Run the ETH3D dataset SLAM banchmark sequence `cables_2` by
 ```bash
 ./bin/main_edge_matching --config_file ./config/eth3d_slam.yaml
 ```
-and the output quads will be written into a file located under the `outputs/` folder. You can visualize the quads by running the python code `visualization/visualize_quads.py`. See the input arguments of that python code for more information. 
-
-## Author
-Chiang-Heng Chien (chiang-heng_chien@brown.edu)
+and the output quads will be written into a file located under the `outputs/` folder. You can visualize the quads by running the python code `visualization/visualize_quads.py`. To generate the figure shown above, use the following command:
+```bash
+export seq=path/to/ETH3D/slam/cables_2/
+python3 visualize_quads.py --kf-left ${seq}/rgb2/11873.252219.png --kf-right ${seq}/rgb/11873.252219.png --cf-left ${seq}/rgb2/11873.289083.png --cf-right ${seq}/rgb/11873.289083.png 
+```

@@ -198,7 +198,7 @@ def resolve_image_paths(
         return tuple(paths)  # type: ignore
 
     kf_i, cf_i = int(m.group(1)), int(m.group(2))
-    dataset = Path("/gpfs/data/bkimia/Datasets/ETH3D/stereo/delivery_area/stereo_pairs")
+    dataset = Path("/gpfs/data/bkimia/Datasets/ETH3D/slam/cables_2")
     if not dataset.is_dir():
         return tuple(paths)  # type: ignore
 
@@ -409,9 +409,7 @@ def main() -> None:
     rng = np.random.default_rng(args.seed)
     quads = subsample_quads(quads, args.max_quads, args.top_quads, rng)
 
-    img_paths = resolve_image_paths(
-        quads_path, args.kf_left, args.kf_right, args.cf_left, args.cf_right
-    )
+    img_paths = resolve_image_paths( quads_path, args.kf_left, args.kf_right, args.cf_left, args.cf_right )
 
     stem = quads_path.stem
     out_path = args.output or quads_path.with_name(quads_path.stem + "_viz.png")
