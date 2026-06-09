@@ -75,6 +75,9 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     std::cout << "Right image size: " << img_right_width << " x " << img_right_height << std::endl;
     std::cout << "Number of grid cells in width: " << num_of_grid_cells_in_width << std::endl;
 
+    //> Bind the same device used by Prepare_For_GPU before any allocations in this translation unit
+    cudacheck(cudaSetDevice(device_id));
+
     //> Allocate GPU memory
     cudacheck( cudaMalloc((void**)&d_F,                            9 * sizeof(float))    );
     cudacheck( cudaMalloc((void**)&d_left_edges,    num_left_edges_  * sizeof(Edge_GPU)) );
@@ -93,6 +96,11 @@ Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, c
     //> cuda event
     cudacheck( cudaEventCreate(&start) );
     cudacheck( cudaEventCreate(&stop) );
+
+    if (num_right_edges_ > 0) {
+        cuda_assert_device_pointer(d_right_edges, "d_right_edges");
+        cuda_assert_device_pointer(d_cell_ids, "d_cell_ids");
+    }
 }
 
 Stereo_Matches_GPU_Timing_Statistics Stereo_Matches_GPU_Pipeline::get_stereo_edge_matching_GPU(size_t frame_idx) {

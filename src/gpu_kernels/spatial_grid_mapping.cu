@@ -83,6 +83,8 @@ void spatial_grid_mapping_kernel_launcher(
     int num_of_grids_in_height,
     int* d_cell_ids)
 {
+    cudacheck(cudaSetDevice(device_id));
+
     int max_threads_per_block = 1024;
     cudacheck(cudaDeviceGetAttribute(&max_threads_per_block, cudaDevAttrMaxThreadsPerBlock, device_id));
 
@@ -93,16 +95,15 @@ void spatial_grid_mapping_kernel_launcher(
 
     dim3 block_dim(threads_per_block, 1, 1);
     dim3 grid_dim(num_blocks, 1, 1);
-    
-    void *kernel_args[] = {
-        reinterpret_cast<void*>(&d_edges),
-        reinterpret_cast<void*>(&num_of_edges),
-        reinterpret_cast<void*>(&num_of_grids_in_width),
-        reinterpret_cast<void*>(&num_of_grids_in_height),
-        reinterpret_cast<void*>(&d_cell_ids)
-    };
 
-    cudacheck(cudaLaunchKernel( reinterpret_cast<const void*>(spatial_grid_mapping_kernel), grid_dim, block_dim, kernel_args, 0, nullptr) );
+    if (num_of_edges > 0) {
+        cuda_assert_device_pointer(d_edges, "d_edges");
+        cuda_assert_device_pointer(d_cell_ids, "d_cell_ids");
+    }
+
+    spatial_grid_mapping_kernel<<<grid_dim, block_dim>>>(
+        d_edges, num_of_edges, num_of_grids_in_width, num_of_grids_in_height, d_cell_ids);
+    cudacheck(cudaGetLastError());
 }
 
 void find_grid_boundaries_kernel_launcher(
@@ -165,6 +166,10 @@ float edge_spatial_map_thrust_pipeline(
 
     //> Copy edges data from host to device
     cudacheck( cudaMemcpy( d_right_edges, h_right_edges, num_right_edges * sizeof(Edge_GPU), cudaMemcpyHostToDevice) );
+    if (num_right_edges > 0) {
+        cuda_assert_device_pointer(d_right_edges, "d_right_edges");
+        cuda_assert_device_pointer(d_cell_ids, "d_cell_ids");
+    }
 
     //> Initialize arrays using Thrust. By default the cells are empty.
     thrust::fill(t_cell_start_idx, t_cell_start_idx + total_num_of_grid_cells, 0);

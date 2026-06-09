@@ -4,9 +4,25 @@
 #include <cuda_runtime.h>
 #include <cstddef>
 #include <stdio.h>
+#include <stdexcept>
 #include <string>
 #include "definitions.h"
 #include "gpu_settings.h"
+
+inline void cuda_assert_device_pointer(const void* ptr, const char* name)
+{
+    if (ptr == nullptr) {
+        throw std::runtime_error(std::string("CUDA null device pointer: ") + name);
+    }
+    cudaPointerAttributes attr{};
+    const cudaError_t err = cudaPointerGetAttributes(&attr, ptr);
+    if (err != cudaSuccess || attr.type != cudaMemoryTypeDevice) {
+        throw std::runtime_error(
+            std::string("CUDA expected device pointer for ") + name +
+            (err != cudaSuccess ? (": " + std::string(cudaGetErrorString(err)))
+                                : ": pointer is not device memory"));
+    }
+}
 
 //> Helper Edge structure
 struct Edge_GPU { 

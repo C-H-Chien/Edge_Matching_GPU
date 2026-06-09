@@ -1,5 +1,7 @@
 //> Needed for printf inside cudacheck macro (host and nvcc compilation)
 #include <cstdio>
+#include <stdexcept>
+#include <string>
 #include "definitions.h"
 
 //> Macro definitions for GPU settings
@@ -50,13 +52,14 @@
 #define BNB_SIFT_TEMPORAL    (0.8)
 #define BNB_NCC_TEMPORAL     (0.9)
 
-//> CUDA error check
+//> CUDA error check (throws so failures cannot cascade into misleading follow-on errors)
 #define cudacheck( a )  do { \
-    cudaError_t e = a; \
-    if(e != cudaSuccess) { \
-        printf("\033[1;31m"); \
-        printf("Error in %s:%d %s (code %d)\n", __func__, __LINE__, cudaGetErrorString(e), (int)e); \
-        printf("\033[0m"); \
+    cudaError_t e = (a); \
+    if (e != cudaSuccess) { \
+        fprintf(stderr, "\033[1;31mError in %s:%d %s (code %d)\033[0m\n", \
+                __func__, __LINE__, cudaGetErrorString(e), static_cast<int>(e)); \
+        throw std::runtime_error( \
+            std::string("CUDA error in ") + __func__ + ": " + cudaGetErrorString(e)); \
     } \
 } while(0)
 
