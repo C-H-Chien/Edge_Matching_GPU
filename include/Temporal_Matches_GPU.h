@@ -30,24 +30,27 @@ struct Temporal_Matches_GPU_Timing_Statistics
     float total_time;
 };
 
-// ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------------------------------
 // GPU temporal quad matching pipeline.
 //
-// Matching unit: a "quad" is a (KF stereo mate, CF stereo mate) pair, where
-// each stereo mate is a final_stereo_edge_pair holding a left and a right edge.
+// Matching unit: a "quad" is (kf_mate_idx, cf_mate_idx), i.e. one KF stereo mate
+// paired with one CF stereo mate. Each mate supplies left+right edges (4 edges total).
+// Device geometry/photometry comes from Merged_Refined_Stereo_Match_GPU arrays.
 //
-// Pipeline (mirrors run_temporal_quad_pipeline_filters in Temporal_Matches.cpp):
-//   1. Build CF-left spatial grid
-//   2. Precompute KF-left and KF-right photometry patches
-//   3. Temporal candidate generation (spatial-grid intersection + orientation filter)
-//   4. NCC left-left  → NCC right-right  (sequential; both must pass)
-//   5. SIFT left-left + right-right  (combined; both must pass)
-//   6. BNB-NCC (on SIFT survivors) → BNB-SIFT (on BNB-NCC survivors)
-//   7. 2D photometric refinement (Gauss-Newton per candidate) + GPU clustering
+// Prerequisites (from stereo GPU, not run here):
+//   - KF/CF mate-indexed left+right photometry patches
+//   - KF/CF final stereo mates on device; CF-left spatial grid inputs
 //
-// Match_by_Edge_Index is reused as { left_edge_idx = kf_mate_idx,
-//                                    right_edge_idx = cf_mate_idx }.
-// ---------------------------------------------------------------------------
+// Pipeline (filter order mirrors run_temporal_quad_pipeline_filters; spatial+OR fused on GPU):
+//   1. Build CF-left spatial grid from CF stereo mates
+//   2. Candidate generation: left-grid search + right box check + left/right OR filters
+//   3. NCC: left-left and right-right must both pass (mate-indexed patches)
+//   4. SIFT: left-left (precomputed) + right-right (on-the-fly from right textures)
+//   5. BNB-NCC on SIFT survivors, then BNB-SIFT on BNB-NCC survivors (best per KF mate)
+//   6. 2D photometric refinement + GPU clustering
+//
+// Match_by_Edge_Index: { left_edge_idx = kf_mate_idx, right_edge_idx = cf_mate_idx }
+// --------------------------------------------------------------------------------------------------
 class Temporal_Matches_GPU_Pipeline {
 public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
