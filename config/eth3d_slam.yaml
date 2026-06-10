@@ -4,6 +4,7 @@
 # Dataset Details
 dataset_dir: "/oscar/data/bkimia/Datasets"
 output_dir: "./outputs"
+clear_output_dir: false  # if true, remove all files under output_dir at startup
 sequence_name: "ETH3D/slam/cables_2"
 dataset_type: "ETH3D_slam"
 
