@@ -1,4 +1,4 @@
-//> Needed for printf inside cudacheck macro (host and nvcc compilation)
+//> Needed for fprintf inside cudacheck macros (host and nvcc compilation)
 #include <cstdio>
 #include <stdexcept>
 #include <string>
@@ -52,6 +52,15 @@
 #define BNB_SIFT_TEMPORAL    (0.8)
 #define BNB_NCC_TEMPORAL     (0.9)
 
+//> CUDA error check (logs only; for destructors and other noexcept cleanup)
+#define cudacheck_noexcept( a )  do { \
+    cudaError_t e = (a); \
+    if (e != cudaSuccess) { \
+        fprintf(stderr, "\033[1;31mError in %s:%d %s (code %d)\033[0m\n", \
+                __func__, __LINE__, cudaGetErrorString(e), static_cast<int>(e)); \
+    } \
+} while(0)
+
 //> CUDA error check (throws so failures cannot cascade into misleading follow-on errors)
 #define cudacheck( a )  do { \
     cudaError_t e = (a); \
@@ -63,5 +72,5 @@
     } \
 } while(0)
 
-//> Safe free
-#define safe_free( ptr ) do { if (ptr) { cudacheck(cudaFree(ptr)); ptr = nullptr; } } while(0)
+//> Safe free (noexcept cleanup)
+#define safe_free( ptr ) do { if (ptr) { cudacheck_noexcept(cudaFree(ptr)); ptr = nullptr; } } while(0)

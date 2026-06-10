@@ -422,44 +422,44 @@ Pipeline::~Pipeline()
     //> free GPU memory
     auto* released_kf_stereo_matches = d_kf_stereo_matches;
     if (released_kf_stereo_matches != nullptr) {
-        cudacheck( cudaFree(d_kf_stereo_matches) );
+        cudacheck_noexcept( cudaFree(d_kf_stereo_matches) );
         d_kf_stereo_matches = nullptr;
     }
     if (d_cf_stereo_matches != nullptr && d_cf_stereo_matches != released_kf_stereo_matches) {
-        cudacheck( cudaFree(d_cf_stereo_matches) );
+        cudacheck_noexcept( cudaFree(d_cf_stereo_matches) );
         d_cf_stereo_matches = nullptr;
     }
     d_cf_stereo_matches = nullptr;
 
     auto* released_kf_left_patches = d_kf_left_patches;
     if (released_kf_left_patches != nullptr) {
-        cudacheck( cudaFree(d_kf_left_patches) );
+        cudacheck_noexcept( cudaFree(d_kf_left_patches) );
         d_kf_left_patches = nullptr;
     }
     if (d_cf_left_patches != nullptr && d_cf_left_patches != released_kf_left_patches) {
-        cudacheck( cudaFree(d_cf_left_patches) );
+        cudacheck_noexcept( cudaFree(d_cf_left_patches) );
         d_cf_left_patches = nullptr;
     }
     d_cf_left_patches = nullptr;
 
     auto* released_kf_right_patches = d_kf_right_patches;
     if (released_kf_right_patches != nullptr) {
-        cudacheck( cudaFree(d_kf_right_patches) );
+        cudacheck_noexcept( cudaFree(d_kf_right_patches) );
         d_kf_right_patches = nullptr;
     }
     if (d_cf_right_patches != nullptr && d_cf_right_patches != released_kf_right_patches) {
-        cudacheck( cudaFree(d_cf_right_patches) );
+        cudacheck_noexcept( cudaFree(d_cf_right_patches) );
         d_cf_right_patches = nullptr;
     }
     d_cf_right_patches = nullptr;
 
     auto* released_kf_left_sift_descriptors = d_kf_left_sift_descriptors;
     if (released_kf_left_sift_descriptors != nullptr) {
-        cudacheck( cudaFree(d_kf_left_sift_descriptors) );
+        cudacheck_noexcept( cudaFree(d_kf_left_sift_descriptors) );
         d_kf_left_sift_descriptors = nullptr;
     }
     if (d_cf_left_sift_descriptors != nullptr && d_cf_left_sift_descriptors != released_kf_left_sift_descriptors) {
-        cudacheck( cudaFree(d_cf_left_sift_descriptors) );
+        cudacheck_noexcept( cudaFree(d_cf_left_sift_descriptors) );
         d_cf_left_sift_descriptors = nullptr;
     }
     d_cf_left_sift_descriptors = nullptr;

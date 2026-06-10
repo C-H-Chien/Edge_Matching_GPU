@@ -602,14 +602,14 @@ Temporal_Matches_GPU_Pipeline::~Temporal_Matches_GPU_Pipeline()
     //  and only when the pipeline owns them
     free_lazy_allocations();
 
-    if (d_cf_left_cell_ids)       cudacheck(cudaFree(d_cf_left_cell_ids));
-    if (d_cf_left_edge_indices)   cudacheck(cudaFree(d_cf_left_edge_indices));
-    if (d_cf_left_cell_start_idx) cudacheck(cudaFree(d_cf_left_cell_start_idx));
-    if (d_cf_left_num_in_cell)    cudacheck(cudaFree(d_cf_left_num_in_cell));
+    if (d_cf_left_cell_ids)       cudacheck_noexcept(cudaFree(d_cf_left_cell_ids));
+    if (d_cf_left_edge_indices)   cudacheck_noexcept(cudaFree(d_cf_left_edge_indices));
+    if (d_cf_left_cell_start_idx) cudacheck_noexcept(cudaFree(d_cf_left_cell_start_idx));
+    if (d_cf_left_num_in_cell)    cudacheck_noexcept(cudaFree(d_cf_left_num_in_cell));
 
-    if (d_temporal_candidates)      cudacheck(cudaFree(d_temporal_candidates));
-    if (d_temporal_candidate_count) cudacheck(cudaFree(d_temporal_candidate_count));
+    if (d_temporal_candidates)      cudacheck_noexcept(cudaFree(d_temporal_candidates));
+    if (d_temporal_candidate_count) cudacheck_noexcept(cudaFree(d_temporal_candidate_count));
 
-    cudacheck(cudaEventDestroy(start));
-    cudacheck(cudaEventDestroy(stop));
+    cudacheck_noexcept(cudaEventDestroy(start));
+    cudacheck_noexcept(cudaEventDestroy(stop));
 }

@@ -694,37 +694,37 @@ Stereo_Matches_GPU_Pipeline::~Stereo_Matches_GPU_Pipeline()
     delete[] h_cell_ids;
     delete[] h_matches_out;
 
-    cudacheck( cudaFree(d_F) );
-    cudacheck( cudaFree(d_left_edges) );
-    cudacheck( cudaFree(d_right_edges) );
-    cudacheck( cudaFree(d_cell_ids) );
-    cudacheck( cudaFree(d_edge_indices) );
-    cudacheck( cudaFree(d_cell_start_idx) );
-    cudacheck( cudaFree(d_num_of_edges_in_cell) );
-    cudacheck( cudaFree(d_final_matches_passing_EP_LP_OR_filters) );
-    cudacheck( cudaFree(d_match_count_passing_EP_LP_OR_filters) );
-    cudacheck( cudaFree(d_left_patches) );
-    if (d_left_sift_descriptors) cudacheck( cudaFree(d_left_sift_descriptors) );
-    cudacheck( cudaFree(d_final_matches_passing_NCC_filter) );
-    cudacheck( cudaFree(d_final_count_passing_NCC_filter) );
-    if (d_ncc_scores_passing_NCC_filter) cudacheck( cudaFree(d_ncc_scores_passing_NCC_filter) );
-    if (d_final_matches_passing_SIFT_filter) cudacheck( cudaFree(d_final_matches_passing_SIFT_filter) );
-    if (d_final_count_passing_SIFT_filter) cudacheck( cudaFree(d_final_count_passing_SIFT_filter) );
-    if (d_sift_scores_passing_SIFT_filter) cudacheck( cudaFree(d_sift_scores_passing_SIFT_filter) );
-    if (d_ncc_scores_passing_SIFT_filter) cudacheck( cudaFree(d_ncc_scores_passing_SIFT_filter) );
-    if (d_final_matches_passing_BNB_NCC_filter) cudacheck( cudaFree(d_final_matches_passing_BNB_NCC_filter) );
-    if (d_final_count_passing_BNB_NCC_filter) cudacheck( cudaFree(d_final_count_passing_BNB_NCC_filter) );
-    if (d_ncc_scores_passing_BNB_NCC_filter) cudacheck( cudaFree(d_ncc_scores_passing_BNB_NCC_filter) );
-    if (d_final_matches_passing_BNB_SIFT_filter) cudacheck( cudaFree(d_final_matches_passing_BNB_SIFT_filter) );
-    if (d_final_count_passing_BNB_SIFT_filter) cudacheck( cudaFree(d_final_count_passing_BNB_SIFT_filter) );
-    if (d_sift_scores_passing_BNB_SIFT_filter) cudacheck( cudaFree(d_sift_scores_passing_BNB_SIFT_filter) );
-    if (d_ncc_scores_passing_second_NCC_filter) cudacheck( cudaFree(d_ncc_scores_passing_second_NCC_filter) );
+    cudacheck_noexcept( cudaFree(d_F) );
+    cudacheck_noexcept( cudaFree(d_left_edges) );
+    cudacheck_noexcept( cudaFree(d_right_edges) );
+    cudacheck_noexcept( cudaFree(d_cell_ids) );
+    cudacheck_noexcept( cudaFree(d_edge_indices) );
+    cudacheck_noexcept( cudaFree(d_cell_start_idx) );
+    cudacheck_noexcept( cudaFree(d_num_of_edges_in_cell) );
+    cudacheck_noexcept( cudaFree(d_final_matches_passing_EP_LP_OR_filters) );
+    cudacheck_noexcept( cudaFree(d_match_count_passing_EP_LP_OR_filters) );
+    cudacheck_noexcept( cudaFree(d_left_patches) );
+    if (d_left_sift_descriptors) cudacheck_noexcept( cudaFree(d_left_sift_descriptors) );
+    cudacheck_noexcept( cudaFree(d_final_matches_passing_NCC_filter) );
+    cudacheck_noexcept( cudaFree(d_final_count_passing_NCC_filter) );
+    if (d_ncc_scores_passing_NCC_filter) cudacheck_noexcept( cudaFree(d_ncc_scores_passing_NCC_filter) );
+    if (d_final_matches_passing_SIFT_filter) cudacheck_noexcept( cudaFree(d_final_matches_passing_SIFT_filter) );
+    if (d_final_count_passing_SIFT_filter) cudacheck_noexcept( cudaFree(d_final_count_passing_SIFT_filter) );
+    if (d_sift_scores_passing_SIFT_filter) cudacheck_noexcept( cudaFree(d_sift_scores_passing_SIFT_filter) );
+    if (d_ncc_scores_passing_SIFT_filter) cudacheck_noexcept( cudaFree(d_ncc_scores_passing_SIFT_filter) );
+    if (d_final_matches_passing_BNB_NCC_filter) cudacheck_noexcept( cudaFree(d_final_matches_passing_BNB_NCC_filter) );
+    if (d_final_count_passing_BNB_NCC_filter) cudacheck_noexcept( cudaFree(d_final_count_passing_BNB_NCC_filter) );
+    if (d_ncc_scores_passing_BNB_NCC_filter) cudacheck_noexcept( cudaFree(d_ncc_scores_passing_BNB_NCC_filter) );
+    if (d_final_matches_passing_BNB_SIFT_filter) cudacheck_noexcept( cudaFree(d_final_matches_passing_BNB_SIFT_filter) );
+    if (d_final_count_passing_BNB_SIFT_filter) cudacheck_noexcept( cudaFree(d_final_count_passing_BNB_SIFT_filter) );
+    if (d_sift_scores_passing_BNB_SIFT_filter) cudacheck_noexcept( cudaFree(d_sift_scores_passing_BNB_SIFT_filter) );
+    if (d_ncc_scores_passing_second_NCC_filter) cudacheck_noexcept( cudaFree(d_ncc_scores_passing_second_NCC_filter) );
 
-    cudacheck( cudaFree(d_prev_merged_matches) );
-    cudacheck( cudaFree(d_prev_merged_count) );
+    cudacheck_noexcept( cudaFree(d_prev_merged_matches) );
+    cudacheck_noexcept( cudaFree(d_prev_merged_count) );
 
-    cudacheck(cudaEventDestroy(start));
-    cudacheck(cudaEventDestroy(stop));
+    cudacheck_noexcept(cudaEventDestroy(start));
+    cudacheck_noexcept(cudaEventDestroy(stop));
 }
 
 namespace {

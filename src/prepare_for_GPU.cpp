@@ -112,19 +112,19 @@ void Prepare_For_GPU_Pipeline::allocate_image_textures()
 void Prepare_For_GPU_Pipeline::release_image_textures()
 {
     if (left_image_texture_.texObj != 0) {
-        cudacheck(cudaDestroyTextureObject(left_image_texture_.texObj));
+        cudacheck_noexcept(cudaDestroyTextureObject(left_image_texture_.texObj));
         left_image_texture_.texObj = 0;
     }
     if (left_image_texture_.array != nullptr) {
-        cudacheck(cudaFreeArray(left_image_texture_.array));
+        cudacheck_noexcept(cudaFreeArray(left_image_texture_.array));
         left_image_texture_.array = nullptr;
     }
     if (right_image_texture_.texObj != 0) {
-        cudacheck(cudaDestroyTextureObject(right_image_texture_.texObj));
+        cudacheck_noexcept(cudaDestroyTextureObject(right_image_texture_.texObj));
         right_image_texture_.texObj = 0;
     }
     if (right_image_texture_.array != nullptr) {
-        cudacheck(cudaFreeArray(right_image_texture_.array));
+        cudacheck_noexcept(cudaFreeArray(right_image_texture_.array));
         right_image_texture_.array = nullptr;
     }
     b_image_textures_ready_ = false;
