@@ -7,6 +7,7 @@
 #include <iostream>
 #include <iomanip>
 #include <sstream>
+#include <filesystem>
 #include "Dataset.h"
 #include "utility.h"
 
@@ -15,6 +16,19 @@ public:
     quad_Edge_vo_io() = default;
     virtual ~quad_Edge_vo_io() = default;
     typedef std::shared_ptr<quad_Edge_vo_io> Ptr;
+
+    //> Remove all files and subdirectories under output_dir (leaves the directory itself).
+    void clear_output_directory(const std::string& output_dir)
+    {
+        namespace fs = std::filesystem;
+        if (!fs::exists(output_dir)) {
+            return;
+        }
+        for (const auto& entry : fs::directory_iterator(output_dir)) {
+            fs::remove_all(entry.path());
+        }
+        LOG_STATUS("Cleared output directory: " + output_dir);
+    }
 
     //> Truncate incremental-append outputs so each program run starts from an empty file (append_* then writes headers on first line).
     void reset_incremental_append_outputs()

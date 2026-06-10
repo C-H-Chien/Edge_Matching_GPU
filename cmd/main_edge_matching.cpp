@@ -98,6 +98,10 @@ int main(int argc, char **argv)
 	quad_Edge_vo_io::Ptr io_tool = nullptr;
 	io_tool = std::make_shared<quad_Edge_vo_io>();
 
+	if (config_map["clear_output_dir"] && config_map["clear_output_dir"].as<bool>()) {
+		io_tool->clear_output_directory(dataset_->get_output_path());
+	}
+
 	//> Clear the incremental append outputs
 	io_tool->reset_incremental_append_outputs();
 
