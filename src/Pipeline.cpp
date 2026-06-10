@@ -52,7 +52,6 @@ bool Pipeline::Add_Stereo_Frame()
             LOG_STATUS("GET_TEMPORAL_EDGE_CORRESPONDENCES");
             // get_Temporal_Edge_Correspondences();
             get_Temporal_Edge_Correspondences_GPU();
-            exit(1);
             break;
         case PipelineStatus::STATUS_SYSTEM_EXIT:
             //> System exit
@@ -191,29 +190,30 @@ void Pipeline::get_Stereo_Edge_Correspondences()
     //> Finalize the stereo edge pairs for the current_frame
     stereo_matches_engine->finalize_stereo_edge_mates(current_frame_stereo_left_constructor, current_frame_stereo_edge_mates);
     
+    //> Optional: output the finalized stereo edge pairs to a file
     // stereo_matches_engine->write_finalized_stereo_edge_pairs_to_file(dataset_, current_frame_stereo_edge_mates, stereo_current_frame_idx);
+
+    //> Increment the current frame index
+    increment_Current_Stereo_Frame_Index();
 
     //> If the current frame is the first frame, make current frame the keyframe
     if (get_Current_Frame_Index() == 0)
     {
         set_Keyframe();
-        increment_Current_Stereo_Frame_Index();
         status_ = PipelineStatus::STATUS_IMG_PREPARATION;
         send_control_to_main = true;
     }
     else
     {
-        increment_Current_Stereo_Frame_Index();
         //> Shift to the next status
         status_ = PipelineStatus::STATUS_GET_TEMPORAL_EDGE_CORRESPONDENCES;
         send_control_to_main = false;
-        // b_end_pipeline_for_debug = true;
     }
 }
 
 void Pipeline::get_Temporal_Edge_Correspondences_GPU()
 {
-    std::cout << "Finding temporal edge correspondences (GPU) (" << get_Keyframe_Index() << "->" << get_Current_Frame_Index() << ")" << std::endl;
+    LOG_INFO("Finding temporal edge correspondences (GPU) (" + std::to_string(get_Keyframe_Index()) + "->" + std::to_string(get_Current_Frame_Index()) + ")");
 
     //> Reset before allocate: avoids a brief 2x VRAM spike
     temporal_matches_engine_GPU.reset();
@@ -246,11 +246,19 @@ void Pipeline::get_Temporal_Edge_Correspondences_GPU()
     //> final_quad_matches[i].left_edge_idx  = index into keyframe_stereo_edge_mates
     //> final_quad_matches[i].right_edge_idx = index into current_frame_stereo_edge_mates
 
-    set_Keyframe();
-
+    //> Shift to the next status
     status_ = PipelineStatus::STATUS_IMG_PREPARATION;
     send_control_to_main = true;
-    b_end_pipeline_for_debug = true;
+
+    //> Simple frame jump strategy
+    if (stereo_current_frame_idx == stereo_key_frame_idx + 5) {
+        set_Keyframe();
+        b_end_pipeline_for_debug = false;
+    }
+
+    std::cout << "Current frame index: " << get_Current_Frame_Index() << " and keyframe index: " << get_Keyframe_Index() << std::endl;
+    increment_Current_Stereo_Frame_Index();
+    std::cout << "Current frame index: " << get_Current_Frame_Index() << " and keyframe index: " << get_Keyframe_Index() << std::endl;
 }
 
 void Pipeline::get_Temporal_Edge_Correspondences()
@@ -314,12 +322,6 @@ void Pipeline::get_Temporal_Edge_Correspondences()
     send_control_to_main = true;
     b_end_pipeline_for_debug = true;
 }
-
-// void Pipeline::free_stereo_temporal_pointers()
-// {
-//     stereo_matches_engine_GPU.reset();
-//     temporal_matches_engine_GPU.reset();
-// }
 
 const Pipeline::AdjacentQuadSnapshot *Pipeline::find_adjacent_snapshot(size_t kf_frame, size_t cf_frame) const
 {
