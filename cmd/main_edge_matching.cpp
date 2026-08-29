@@ -168,6 +168,7 @@ int main(int argc, char **argv)
 		<< quad_vo_sys->collect_temporal_GPU_times[i].time_apply_bnb_ncc_filter << " "
 		<< quad_vo_sys->collect_temporal_GPU_times[i].time_apply_bnb_sift_filter << " "
 		<< quad_vo_sys->collect_temporal_GPU_times[i].time_apply_photometric_refine << " "
+		<< quad_vo_sys->collect_temporal_GPU_times[i].time_apply_lowe_ratio_filter << " "
 		<< quad_vo_sys->collect_temporal_GPU_times[i].total_time << std::endl;
 	}
 	temporal_gpu_timings_file.close();

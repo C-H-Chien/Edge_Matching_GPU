@@ -234,8 +234,8 @@ void Pipeline::get_Temporal_Edge_Correspondences_GPU()
     temporal_GPU_times = temporal_matches_engine_GPU->get_temporal_edge_matching_GPU();
 
     //> Retrieve final (kf_mate_idx, cf_mate_idx) pairs for downstream use
-    std::vector<Match_by_Edge_Index> final_quad_matches;
-    temporal_matches_engine_GPU->retrieve_final_matches(final_quad_matches);
+    gpu_final_quad_matches.clear();
+    temporal_matches_engine_GPU->retrieve_final_quad_matches(gpu_final_quad_matches);
 
     //> output the results to files
     temporal_matches_engine_GPU->write_finalized_matches_to_file(stereo_key_frame_idx, stereo_current_frame_idx);

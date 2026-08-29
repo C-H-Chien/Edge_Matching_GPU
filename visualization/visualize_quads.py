@@ -21,6 +21,11 @@ Examples:
   python visualize_quads.py outputs/gpu_temporal_quad_matches_kf0_cf1.txt \\
       --max-quads 50 --top-quads 500
 
+Example usage when running on Brown CCV Oscars:
+    export seq=/gpfs/data/bkimia/Datasets/ETH3D/slam/cables_2/
+    python3 visualize_quads.py --kf-left ${seq}/rgb2/11873.436536.png --cf-left ${seq}/rgb2/11873.473400.png --kf-right ${seq}/rgb/11873.436536.png --cf-right ${seq}/rgb/11873.473400.png
+    python3 visualize_quads.py --kf-left ${seq}/rgb2/11873.252219.png --cf-left ${seq}/rgb2/11873.436536.png --kf-right ${seq}/rgb/11873.252219.png --cf-right ${seq}/rgb/11873.436536.png
+
 GPU output rows are sorted by ascending ambiguity (stable): earlier rows are
 higher-rank / more stable. Random subsampling uses only the first --top-quads rows.
 """
@@ -72,6 +77,9 @@ def detect_format(quads_path: Path) -> str:
 
 
 def read_gpu_quads(quads_path: Path) -> List[Quad]:
+    with quads_path.open() as f:
+        hdr = f.readline().lower().split()
+    geo_offset = 3 if "photometric_rms" in hdr else 2
     data = np.loadtxt(quads_path, skiprows=1)
     if data.ndim == 1:
         data = data.reshape(1, -1)
@@ -79,18 +87,18 @@ def read_gpu_quads(quads_path: Path) -> List[Quad]:
     for row in data:
         quads.append(
             Quad(
-                kf_lx=row[2],
-                kf_ly=row[3],
-                kf_lo=row[4],
-                kf_rx=row[5],
-                kf_ry=row[6],
-                kf_ro=row[7],
-                cf_lx=row[8],
-                cf_ly=row[9],
-                cf_lo=row[10],
-                cf_rx=row[11],
-                cf_ry=row[12],
-                cf_ro=row[13],
+                kf_lx=row[geo_offset],
+                kf_ly=row[geo_offset + 1],
+                kf_lo=row[geo_offset + 2],
+                kf_rx=row[geo_offset + 3],
+                kf_ry=row[geo_offset + 4],
+                kf_ro=row[geo_offset + 5],
+                cf_lx=row[geo_offset + 6],
+                cf_ly=row[geo_offset + 7],
+                cf_lo=row[geo_offset + 8],
+                cf_rx=row[geo_offset + 9],
+                cf_ry=row[geo_offset + 10],
+                cf_ro=row[geo_offset + 11],
                 style="final",
             )
         )
@@ -346,9 +354,9 @@ def plot_quads_2x2(
 def main() -> None:
     script_dir = Path(__file__).resolve().parent
     proj_root = script_dir.parent
-    default_quads = proj_root / "outputs" / "gpu_temporal_quad_matches_kf0_cf1.txt"
+    default_quads = proj_root / "outputs" / "gpu_temporal_quad_matches_kf0_cf5.txt"
     if not default_quads.is_file():
-        default_quads = proj_root / "outputs" / "quads_kf0_cf1.txt"
+        default_quads = proj_root / "outputs" / "quads_kf5_cf6.txt"
 
     parser = argparse.ArgumentParser(description="Visualize temporal edge quads (2x2 layout).")
     parser.add_argument(

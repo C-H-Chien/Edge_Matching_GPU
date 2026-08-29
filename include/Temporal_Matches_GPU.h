@@ -40,6 +40,7 @@ struct Temporal_Matches_GPU_Timing_Statistics
     float time_apply_bnb_ncc_filter;            //> Best-nearly-best on NCC scores
     float time_apply_bnb_sift_filter;           //> Best-nearly-best on SIFT scores
     float time_apply_photometric_refine;        //> 2D Gauss-Newton refinement + GPU clustering
+    float time_apply_lowe_ratio_filter;         //> Lowe's ratio on ambiguous KF mates (photometric_rms)
     float total_time;
 };
 
@@ -61,6 +62,7 @@ struct Temporal_Matches_GPU_Timing_Statistics
 //   4. SIFT: left-left (precomputed) + right-right (on-the-fly from right textures)
 //   5. BNB-NCC on SIFT survivors, then BNB-SIFT on BNB-NCC survivors (best per KF mate)
 //   6. 2D photometric refinement + GPU clustering
+//   7. Lowe's ratio on photometric_rms for ambiguous KF mates (>1 clustered quad)
 //
 // Match_by_Edge_Index: { left_edge_idx = kf_mate_idx, right_edge_idx = cf_mate_idx }
 // --------------------------------------------------------------------------------------------------
@@ -92,7 +94,8 @@ public:
     //> Run the full GPU temporal quad filter pipeline for KF->CF
     Temporal_Matches_GPU_Timing_Statistics get_temporal_edge_matching_GPU( );
 
-    //> Copy final temporal quads to host, sorted by ascending quads-per-KF-mate (1 = highest rank).
+    //> Copy final temporal quads to host, sorted by TEMPORAL_QUAD_RANK_BY_PHOTOMETRIC_RMS in gpu_settings.h
+    //> (photometric_rms ascending, or quads-per-KF-mate ascending when the flag is false).
     void retrieve_final_matches(std::vector<Match_by_Edge_Index>& out_matches) const;
     void retrieve_final_quad_matches(std::vector<Temporal_Refined_Quad_Match>& out_matches) const;
 
@@ -194,6 +197,7 @@ private:
     float apply_bnb_ncc_filter();
     float apply_bnb_sift_filter();
     float apply_photometric_refine_and_cluster();
+    float apply_lowe_ratio_filter();
     void ensure_mate_left_sift_descriptors();
 
     void free_lazy_allocations();

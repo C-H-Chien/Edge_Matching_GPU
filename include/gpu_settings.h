@@ -20,6 +20,11 @@
 
 #define WRITE_GPU_TEMPORAL_STAGE_SNAPSHOTS (false)
 
+//> Final temporal quad rank order (see retrieve_final_quad_matches):
+//> false = ascending quads-per-KF-mate (1 quad per KF = highest rank / most unambiguous)
+//> true  = ascending photometric_rms (lower RMS = higher rank)
+#define TEMPORAL_QUAD_RANK_BY_PHOTOMETRIC_RMS (false)
+
 //> Macros related to NCC filter (must mirror Utility::get_patch_on_one_edge_side + get_Orthogonal_Shifted_Points)
 //> PATCH_RADIUS: half-width in pixels; CPU loops i,j in [-half..half] with half = floor(PATCH_SIZE/2) == PATCH_SIZE/2 for odd PATCH_SIZE
 #define PATCH_RADIUS                    (PATCH_SIZE / 2)

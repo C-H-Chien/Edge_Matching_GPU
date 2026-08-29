@@ -476,6 +476,18 @@ float temporal_photometric_refine_and_cluster_pipeline(
     cudaEvent_t                                         stop
 );
 
+//> Lowe's ratio on clustered temporal quads: for KF mates with >1 quad, reject when
+//> best_rms/second_best_rms >= threshold; otherwise keep the lowest-RMS quad only.
+//> (defined in apply_temporal_quad_lowe_ratio_filter.cu)
+float apply_temporal_quad_lowe_ratio_filter_pipeline(
+    int                               device_id,
+    Temporal_Refined_Quad_Match_GPU*  d_clustered_matches,
+    int&                              h_clustered_count_inout,
+    int*&                             d_clustered_count,
+    float                             lowe_ratio_threshold,
+    cudaEvent_t                       start,
+    cudaEvent_t                       stop);
+
 //> Mate-ordered left SIFT for temporal quads when compact stereo output is missing
 //> (defined in extract_mate_ordered_left_sift.cu)
 void extract_mate_ordered_left_sift_pipeline(

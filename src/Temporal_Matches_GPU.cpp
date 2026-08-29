@@ -126,6 +126,10 @@ Temporal_Matches_GPU_Timing_Statistics Temporal_Matches_GPU_Pipeline::get_tempor
     std::cout << "[Temporal GPU] Candidates after photometric refinement: " << h_match_count_after_refine  << std::endl;
     std::cout << "[Temporal GPU] Final matches after clustering:          " << h_match_count_after_cluster << std::endl;
 
+    GPU_time_collection.time_apply_lowe_ratio_filter = apply_lowe_ratio_filter();
+    GPU_time_collection.total_time += GPU_time_collection.time_apply_lowe_ratio_filter;
+    std::cout << "[Temporal GPU] Final matches after Lowe's ratio:      " << h_match_count_after_cluster << std::endl;
+
 #if SHOW_TIMING_BREAKDOWN
     std::cout.precision(3);
     std::cout << "Temporal GPU timing breakdown" << std::endl;
@@ -136,6 +140,7 @@ Temporal_Matches_GPU_Timing_Statistics Temporal_Matches_GPU_Pipeline::get_tempor
     std::cout << "  BNB-NCC filter:                  " << GPU_time_collection.time_apply_bnb_ncc_filter            << " ms" << std::endl;
     std::cout << "  BNB-SIFT filter:                 " << GPU_time_collection.time_apply_bnb_sift_filter           << " ms" << std::endl;
     std::cout << "  photometric refine + cluster:    " << GPU_time_collection.time_apply_photometric_refine        << " ms" << std::endl;
+    std::cout << "  Lowe's ratio filter:             " << GPU_time_collection.time_apply_lowe_ratio_filter         << " ms" << std::endl;
     std::cout << "  TOTAL:                           " << GPU_time_collection.total_time                           << " ms" << std::endl;
 #endif
 
@@ -429,6 +434,27 @@ float Temporal_Matches_GPU_Pipeline::apply_photometric_refine_and_cluster()
         start, stop);
 }
 
+// ---------------------------------------------------------------------------
+// Stage 8: Lowe's ratio on photometric_rms for ambiguous KF mates.
+//   Input  : clustered Temporal_Refined_Quad_Match_GPU.
+//   Output : same buffer compacted; unambiguous KF mates pass through unchanged.
+// ---------------------------------------------------------------------------
+float Temporal_Matches_GPU_Pipeline::apply_lowe_ratio_filter()
+{
+    if (h_match_count_after_cluster <= 0 || d_clustered_matches == nullptr) {
+        LOG_WARNING("Temporal GPU Lowe's ratio: no clustered matches, skipping");
+        return 0.0f;
+    }
+
+    return apply_temporal_quad_lowe_ratio_filter_pipeline(
+        device_id,
+        d_clustered_matches,
+        h_match_count_after_cluster,
+        d_clustered_count,
+        static_cast<float>(LOWES_RATIO),
+        start, stop);
+}
+
 // ===========================================================================
 // retrieve_final_matches / retrieve_final_quad_matches
 // ===========================================================================
@@ -462,6 +488,34 @@ void sort_final_quads_by_kf_mate_count(std::vector<Temporal_Refined_Quad_Match_G
             }
             return a.cf_mate_idx < b.cf_mate_idx;
         });
+}
+
+// Rank final quads by photometric refinement RMS (lower = higher rank).
+void sort_final_quads_by_photometric_rms(std::vector<Temporal_Refined_Quad_Match_GPU>& matches)
+{
+    if (matches.size() <= 1) {
+        return;
+    }
+
+    std::stable_sort(matches.begin(), matches.end(),
+        [](const Temporal_Refined_Quad_Match_GPU& a, const Temporal_Refined_Quad_Match_GPU& b) {
+            if (a.photometric_rms != b.photometric_rms) {
+                return a.photometric_rms < b.photometric_rms;
+            }
+            if (a.kf_mate_idx != b.kf_mate_idx) {
+                return a.kf_mate_idx < b.kf_mate_idx;
+            }
+            return a.cf_mate_idx < b.cf_mate_idx;
+        });
+}
+
+void sort_final_quads(std::vector<Temporal_Refined_Quad_Match_GPU>& matches)
+{
+#if TEMPORAL_QUAD_RANK_BY_PHOTOMETRIC_RMS
+    sort_final_quads_by_photometric_rms(matches);
+#else
+    sort_final_quads_by_kf_mate_count(matches);
+#endif
 }
 
 Temporal_Refined_Quad_Match to_host_quad_match(
@@ -500,7 +554,7 @@ void Temporal_Matches_GPU_Pipeline::retrieve_final_quad_matches(
                          static_cast<size_t>(h_match_count_after_cluster) * sizeof(Temporal_Refined_Quad_Match_GPU),
                          cudaMemcpyDeviceToHost));
 
-    sort_final_quads_by_kf_mate_count(gpu_quads);
+    sort_final_quads(gpu_quads);
 
     if (d_kf_stereo_matches != nullptr && num_kf_mates_ > 0) {
         kf_stereo_mates_host_.resize(num_kf_mates_);
@@ -561,7 +615,7 @@ void Temporal_Matches_GPU_Pipeline::write_finalized_matches_to_file( size_t kf_f
         return;
     }
 
-    ofs << "kf_mate_idx cf_mate_idx "
+    ofs << "kf_mate_idx cf_mate_idx photometric_rms "
            "kf_left_x kf_left_y kf_left_orientation "
            "kf_right_x kf_right_y kf_right_orientation "
            "cf_left_x cf_left_y cf_left_orientation "
@@ -573,7 +627,7 @@ void Temporal_Matches_GPU_Pipeline::write_finalized_matches_to_file( size_t kf_f
             continue;
         }
         const Merged_Refined_Stereo_Match_GPU& kf_mate = *q.kf_stereo_mate;
-        ofs << q.kf_mate_idx << " " << q.cf_mate_idx << " "
+        ofs << q.kf_mate_idx << " " << q.cf_mate_idx << " " << q.photometric_rms << " "
             << kf_mate.left_location_x << " " << kf_mate.left_location_y << " " << kf_mate.left_orientation << " "
             << kf_mate.merged_right_x << " " << kf_mate.merged_right_y << " " << kf_mate.merged_right_orientation << " "
             << q.cf_left_x << " " << q.cf_left_y << " " << q.cf_left_orientation << " "
@@ -581,7 +635,11 @@ void Temporal_Matches_GPU_Pipeline::write_finalized_matches_to_file( size_t kf_f
     }
     ofs.close();
     std::cout << "[Temporal GPU] Wrote " << quads.size() << " temporal quad matches to " << fname
+#if TEMPORAL_QUAD_RANK_BY_PHOTOMETRIC_RMS
+              << " (sorted by photometric_rms ascending; highest rank = lowest RMS)" << std::endl;
+#else
               << " (sorted by quads-per-KF-mate ascending; highest rank = most unambiguous)" << std::endl;
+#endif
 }
 
 void Temporal_Matches_GPU_Pipeline::free_lazy_allocations()

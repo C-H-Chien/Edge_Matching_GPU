@@ -44,9 +44,6 @@
 #define HUBER_DELTA (1.0) //> Huber threshold
 #define LOWES_RATIO (0.8) //> Suggested in Lowe's paper
 
-//> TODO: remove this
-#define BIDIRECTIONAL_FILTERING (false)
-
 //> precision-recall experiments
 #define DIST_TO_GT_THRESH (1.0) //> in pixels
 #define DIST_TO_GT_THRESH_QUADS (2.0) //> in pixels

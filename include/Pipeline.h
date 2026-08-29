@@ -274,6 +274,9 @@ private:
     //> Final temporal quads by Keyframe
     std::vector<KF_Temporal_Edge_Quads> temporal_quads_by_kf;
 
+    //> GPU temporal pipeline: finalized quads (refined CF geometry + KF mate snapshot), ranked per gpu_settings.h
+    std::vector<Temporal_Refined_Quad_Match> gpu_final_quad_matches;
+
     //> Rolling buffer of adjacent-frame veridical quads for intersecting chains (source -> … -> dest).
     struct AdjacentQuadSnapshot
     {

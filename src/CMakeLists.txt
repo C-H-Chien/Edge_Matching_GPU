@@ -32,6 +32,7 @@ if(ENABLE_CUDA)
         gpu_kernels/apply_temporal_quad_sift_filter.cu
         gpu_kernels/apply_temporal_quad_bnb_filter.cu
         gpu_kernels/temporal_photometric_refine_and_cluster.cu
+        gpu_kernels/apply_temporal_quad_lowe_ratio_filter.cu
         gpu_kernels/extract_mate_ordered_left_sift.cu
     )
 endif()
