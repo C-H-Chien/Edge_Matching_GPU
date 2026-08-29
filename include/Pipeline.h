@@ -21,6 +21,7 @@
 #include "prepare_for_GPU.h"
 #include "Stereo_Matches_GPU.h"
 #include "Temporal_Matches_GPU.h"
+#include "memory_stats.h"
 
 //> status of the visual odometry pipeline
 enum class PipelineStatus
@@ -92,6 +93,8 @@ public:
 
     std::vector<Stereo_Matches_GPU_Timing_Statistics>   collect_stereo_GPU_times;
     std::vector<Temporal_Matches_GPU_Timing_Statistics> collect_temporal_GPU_times;
+    Memory_Usage_Statistics run_peak_memory() const { return run_memory_monitor_.peaks(); }
+    void sample_run_memory() { run_memory_monitor_.sample(); }
 
     //> for debugging purpose
     bool b_end_pipeline_for_debug = false;
@@ -144,79 +147,10 @@ private:
 
     void ProcessEdges(const cv::Mat &image, std::vector<Edge> &edges, bool is_left);
 
-    void set_CF_Stereo_Matches_GPU_Pointers()
-    {
-        //> Set the stereo edge matches pointers from GPU
-        d_cf_stereo_matches = stereo_matches_engine_GPU->d_merged_refined_matches;
-        stereo_matches_engine_GPU->d_merged_refined_matches = nullptr;
-
-        //> Borrow compact left descriptors/patches in final stereo-match order for the next temporal pass.
-        d_cf_left_patches = stereo_matches_engine_GPU->d_final_left_patches;
-        stereo_matches_engine_GPU->d_final_left_patches = nullptr;
-        d_cf_right_patches = stereo_matches_engine_GPU->d_final_right_patches;
-        stereo_matches_engine_GPU->d_final_right_patches = nullptr;
-        d_cf_left_sift_descriptors = stereo_matches_engine_GPU->d_final_left_sift_descriptors;
-        stereo_matches_engine_GPU->d_final_left_sift_descriptors = nullptr;
-
-        //> Set the number of stereo edge correspondences from GPU
-        num_of_cf_stereo_matches = stereo_matches_engine_GPU->h_match_count_passing_NCC_filter;
-
-        //> CH Notes: If d_cf_left_sift_descriptor does not exist (the code does not produce d_final_left_sift_descriptors), 
-        //  this block of code is a fallback so temporal GPU SIFT always has a valid "mat-ordered" left SIFT descriptors for CF.
-        if (d_cf_left_sift_descriptors == nullptr && d_cf_stereo_matches != nullptr && num_of_cf_stereo_matches > 0) {
-            LOG_WARNING("d_cf_left_sift_descriptors is nullptr; attempting to extract mat-ordered left SIFT descriptors from stereo matches");
-            if (stereo_matches_engine_GPU->d_left_sift_descriptors != nullptr) {
-                extract_mate_ordered_left_sift_pipeline(
-                    DEVICE_ID,
-                    d_cf_stereo_matches,
-                    stereo_matches_engine_GPU->d_left_sift_descriptors,
-                    num_of_cf_stereo_matches,
-                    d_cf_left_sift_descriptors);
-            }
-            if (d_cf_left_sift_descriptors == nullptr && left_cf_img_texture_.texObj != 0) {
-                const int cf_left_w = current_frame.left_image_undistorted.empty() ? (current_frame.left_image.cols) : (current_frame.left_image_undistorted.cols);
-                const int cf_left_h = current_frame.left_image_undistorted.empty() ? (current_frame.left_image.rows) : (current_frame.left_image_undistorted.rows);
-                precompute_mate_left_sift_from_texture_pipeline(
-                    DEVICE_ID,
-                    d_cf_stereo_matches,
-                    left_cf_img_texture_.texObj,
-                    cf_left_w, cf_left_h,
-                    num_of_cf_stereo_matches,
-                    d_cf_left_sift_descriptors);
-            }
-        }
-
-        std::cout << "[CHECK] Number of stereo edge matches: " << num_of_cf_stereo_matches
-                  << " (CF left SIFT " << (d_cf_left_sift_descriptors != nullptr ? "ready" : "missing") << ")"
-                  << std::endl;
-    }
-
-    void set_Keyframe()
-    {
-        stereo_key_frame_idx = stereo_current_frame_idx;
-
-        keyframe = current_frame;
-        keyframe_stereo_edge_mates = current_frame_stereo_edge_mates;
-        keyframe_stereo_left_constructor = current_frame_stereo_left_constructor;
-        keyframe_stereo_left_constructor.stereo_frame = &keyframe;
-        keyframe_stereo_left_constructor.left_disparity_map = keyframe.left_disparity_map;
-        keyframe_stereo_left_constructor.right_disparity_map = keyframe.right_disparity_map;
-
-        //> For GPU pipelines
-        keyframe_prepare_for_GPU_engine = prepare_for_GPU_engine;
-        left_kf_img_texture_ = left_cf_img_texture_;
-        right_kf_img_texture_ = right_cf_img_texture_;
-        d_kf_stereo_matches = d_cf_stereo_matches;
-        d_kf_left_patches = d_cf_left_patches;
-        d_kf_right_patches = d_cf_right_patches;
-        d_kf_left_sift_descriptors = d_cf_left_sift_descriptors;
-        num_of_kf_stereo_matches = num_of_cf_stereo_matches;
-
-        //> reset current_frame
-        current_frame = StereoFrame();
-        current_frame_stereo_edge_mates.clear();
-        current_frame_stereo_left_constructor.clean_up_vector_data_structures();
-    }
+    void release_cf_stereo_gpu_buffers();
+    void release_kf_stereo_gpu_buffers();
+    void set_CF_Stereo_Matches_GPU_Pointers();
+    void set_Keyframe();
 
     void set_Stereo_Left_Constructor()
     {
@@ -314,6 +248,8 @@ private:
     std::ofstream timing_statistics_file;
     std::ofstream stereo_matches_timing_statistics_file;
     std::ofstream temporal_matches_timing_statistics_file;
+
+    MemoryMonitor run_memory_monitor_{DEVICE_ID};
 };
 
 #endif

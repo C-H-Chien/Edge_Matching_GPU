@@ -66,6 +66,8 @@
 
 #define MEASURE_TIMINGS (false)
 
+#define MEASURE_MEMORY (true)
+
 #define SAVE_GROUND_TRUTH_POSES (true)
 
 //> Verbose

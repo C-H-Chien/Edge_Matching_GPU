@@ -14,6 +14,7 @@
 #include "definitions.h"
 #include "gpu_kernels.h"
 #include "Dataset.h"
+#include "memory_stats.h"
 
 //> Host-side view of a finalized temporal quad. KF geometry is referenced via
 //> kf_stereo_mate (non-owning); valid until the next retrieve_final_quad_matches call.
@@ -42,6 +43,7 @@ struct Temporal_Matches_GPU_Timing_Statistics
     float time_apply_photometric_refine;        //> 2D Gauss-Newton refinement + GPU clustering
     float time_apply_lowe_ratio_filter;         //> Lowe's ratio on ambiguous KF mates (photometric_rms)
     float total_time;
+    Memory_Usage_Statistics memory;
 };
 
 // --------------------------------------------------------------------------------------------------

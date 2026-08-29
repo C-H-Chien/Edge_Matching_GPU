@@ -5,6 +5,7 @@ set (control_sources
         toed/cpu_toed.cpp
         Stereo_Matches.cpp
         Temporal_Matches.cpp
+        memory_stats.cpp
         Stereo_Iterator.cpp
         EdgeClusterer.cpp
 

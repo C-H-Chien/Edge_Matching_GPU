@@ -14,10 +14,11 @@
 #include <cuda_runtime.h>
 #include <cuda_runtime_api.h>
 
-#include "definitions.h"
 #include "Stereo_Matches_GPU.h"
 #include "gpu_kernels.h"
 #include "Dataset.h"
+#include "memory_stats.h"
+#include "definitions.h"
 
 Stereo_Matches_GPU_Pipeline::Stereo_Matches_GPU_Pipeline(Dataset::Ptr dataset, const Prepare_For_GPU_Pipeline::Ptr prepare_for_GPU_engine, 
                                                          const StereoFrame& current_frame, int device)
@@ -108,10 +109,16 @@ Stereo_Matches_GPU_Timing_Statistics Stereo_Matches_GPU_Pipeline::get_stereo_edg
     //> Timer holders
     Stereo_Matches_GPU_Timing_Statistics GPU_time_collection;
     GPU_time_collection.total_time = 0.0;
+#if MEASURE_MEMORY
+    MemoryMonitor memory_monitor(device_id);
+#endif
 
     //> For each edge on the right, construct the spatial grid mapping (result is stored in d_cell_ids)
     GPU_time_collection.time_spatial_grid_mapping = build_edge_spatial_map();
     GPU_time_collection.total_time += GPU_time_collection.time_spatial_grid_mapping;
+#if MEASURE_MEMORY
+    memory_monitor.sample();
+#endif
     #if COPY_DATA_FROM_HOST_TO_DEVICE_FOR_TESTING
     test_spatial_grid_mapping();
     #endif
@@ -119,6 +126,9 @@ Stereo_Matches_GPU_Timing_Statistics Stereo_Matches_GPU_Pipeline::get_stereo_edg
     //> Do epipolar line rasterization to find right candidate edges that pass EP, LP, and OR filters
     GPU_time_collection.time_epipolar_rasterization = rasterize_epipolar_band_for_matches();
     GPU_time_collection.total_time += GPU_time_collection.time_epipolar_rasterization;
+#if MEASURE_MEMORY
+    memory_monitor.sample();
+#endif
     #if WRITE_GPU_STEREO_STAGE_SNAPSHOTS
     write_gpu_stage_match_by_edge_index_file(device_id, dataset_, h_left_edges, num_left_edges_, h_right_edges, num_right_edges_,
                                            d_final_matches_passing_EP_LP_OR_filters, d_match_count_passing_EP_LP_OR_filters, "ep_lp_or", frame_idx);
@@ -131,10 +141,16 @@ Stereo_Matches_GPU_Timing_Statistics Stereo_Matches_GPU_Pipeline::get_stereo_edg
     //> Precompute the left edge patches photometry
     GPU_time_collection.time_precompute_left_edge_patches_photometry = precompute_left_edge_patches_photometry();
     GPU_time_collection.total_time += GPU_time_collection.time_precompute_left_edge_patches_photometry;
+#if MEASURE_MEMORY
+    memory_monitor.sample();
+#endif
 
     //> Apply NCC filter
     GPU_time_collection.time_apply_NCC_filter = apply_NCC_filter();
     GPU_time_collection.total_time += GPU_time_collection.time_apply_NCC_filter;
+#if MEASURE_MEMORY
+    memory_monitor.sample();
+#endif
     // std::cout << "Number of matches passing NCC filter: " << h_match_count_passing_NCC_filter << std::endl;
     #if WRITE_GPU_STEREO_STAGE_SNAPSHOTS
     write_gpu_stage_match_by_edge_index_file(device_id, dataset_, h_left_edges, num_left_edges_, h_right_edges, num_right_edges_,
@@ -147,6 +163,9 @@ Stereo_Matches_GPU_Timing_Statistics Stereo_Matches_GPU_Pipeline::get_stereo_edg
     //> Apply GPU-only SIFT-style descriptor filter
     GPU_time_collection.time_apply_SIFT_descriptor_filter = apply_SIFT_descriptor_filter();
     GPU_time_collection.total_time += GPU_time_collection.time_apply_SIFT_descriptor_filter;
+#if MEASURE_MEMORY
+    memory_monitor.sample();
+#endif
     // std::cout << "Number of matches passing GPU SIFT descriptor filter: " << h_match_count_passing_SIFT_filter << std::endl;
     #if WRITE_GPU_STEREO_STAGE_SNAPSHOTS
     write_gpu_stage_match_by_edge_index_file(device_id, dataset_, h_left_edges, num_left_edges_, h_right_edges, num_right_edges_,
@@ -159,6 +178,9 @@ Stereo_Matches_GPU_Timing_Statistics Stereo_Matches_GPU_Pipeline::get_stereo_edg
     //> Apply Best-Nearly-Best in GPU for NCC and SIFT scores.
     GPU_time_collection.time_apply_BNB_NCC_filter = apply_BNB_NCC_filter();
     GPU_time_collection.total_time += GPU_time_collection.time_apply_BNB_NCC_filter;
+#if MEASURE_MEMORY
+    memory_monitor.sample();
+#endif
     // std::cout << "Number of matches passing GPU BNB-NCC filter: " << h_match_count_passing_BNB_NCC_filter << std::endl;
     #if WRITE_GPU_STEREO_STAGE_SNAPSHOTS
     write_gpu_stage_match_by_edge_index_file(device_id, dataset_, h_left_edges, num_left_edges_, h_right_edges, num_right_edges_,
@@ -167,6 +189,9 @@ Stereo_Matches_GPU_Timing_Statistics Stereo_Matches_GPU_Pipeline::get_stereo_edg
 
     GPU_time_collection.time_apply_BNB_SIFT_filter = apply_BNB_SIFT_filter();
     GPU_time_collection.total_time += GPU_time_collection.time_apply_BNB_SIFT_filter;
+#if MEASURE_MEMORY
+    memory_monitor.sample();
+#endif
     // std::cout << "Number of matches passing GPU BNB-SIFT filter: " << h_match_count_passing_BNB_SIFT_filter << std::endl;
     #if WRITE_GPU_STEREO_STAGE_SNAPSHOTS
     write_gpu_stage_match_by_edge_index_file(device_id, dataset_, h_left_edges, num_left_edges_, h_right_edges, num_right_edges_,
@@ -176,16 +201,26 @@ Stereo_Matches_GPU_Timing_Statistics Stereo_Matches_GPU_Pipeline::get_stereo_edg
     //> Shift edge pair hypothesis onto the epipolar line and refine the edge location by minimizing the photometric residual, with consolidation as the final step
     GPU_time_collection.time_apply_epipolar_shift_photometric_refine_and_merge = apply_epipolar_shift_photometric_refine_and_merge();
     GPU_time_collection.total_time += GPU_time_collection.time_apply_epipolar_shift_photometric_refine_and_merge;
+#if MEASURE_MEMORY
+    memory_monitor.sample();
+#endif
     // std::cout << "Number of matches after GPU shift + refine + merge: " << h_match_count_merged_after_refine << std::endl;
 
     //> Apply the second NCC filter
     GPU_time_collection.time_apply_second_NCC_filter = apply_second_NCC_filter();
     GPU_time_collection.total_time += GPU_time_collection.time_apply_second_NCC_filter;
+#if MEASURE_MEMORY
+    memory_monitor.sample();
+#endif
     // std::cout << "Number of matches passing the second NCC filter: " << h_match_count_passing_NCC_filter << std::endl;
 
     //> One merged hypothesis per left edge: keep the candidate with the highest second-NCC score
     GPU_time_collection.time_apply_best_second_ncc_per_left = apply_best_second_ncc_per_left_after_second_NCC();
     GPU_time_collection.total_time += GPU_time_collection.time_apply_best_second_ncc_per_left;
+#if MEASURE_MEMORY
+    memory_monitor.sample();
+    GPU_time_collection.memory = memory_monitor.peaks();
+#endif
     // std::cout << "Number of matches after best second-NCC per left (one-to-one): " << h_match_count_passing_NCC_filter << std::endl;
 
 #if SHOW_TIMING_BREAKDOWN

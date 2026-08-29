@@ -16,6 +16,7 @@
 #include "prepare_for_GPU.h"
 #include "Stereo_Matches_GPU_Validator.h"
 #include "Dataset.h"
+#include "memory_stats.h"
 
 struct Stereo_Matches_GPU_Timing_Statistics
 {
@@ -30,6 +31,7 @@ struct Stereo_Matches_GPU_Timing_Statistics
     float time_apply_second_NCC_filter;
     float time_apply_best_second_ncc_per_left;
     float total_time;
+    Memory_Usage_Statistics memory;
 };
 
 class Stereo_Matches_GPU_Pipeline {

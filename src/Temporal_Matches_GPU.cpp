@@ -18,6 +18,7 @@
 #include "gpu_kernels.h"
 #include "prepare_for_GPU.h"
 #include "Dataset.h"
+#include "memory_stats.h"
 
 Temporal_Matches_GPU_Pipeline::Temporal_Matches_GPU_Pipeline(
     Dataset::Ptr dataset, const StereoFrame& current_frame,
@@ -90,44 +91,72 @@ Temporal_Matches_GPU_Timing_Statistics Temporal_Matches_GPU_Pipeline::get_tempor
 {
     Temporal_Matches_GPU_Timing_Statistics GPU_time_collection;
     GPU_time_collection.total_time = 0.0f;
+#if MEASURE_MEMORY
+    MemoryMonitor memory_monitor(device_id);
+#endif
 
     //> CF-left spatial grid
     GPU_time_collection.time_build_cf_left_spatial_grid = build_cf_left_spatial_grid();
     GPU_time_collection.total_time += GPU_time_collection.time_build_cf_left_spatial_grid;
+#if MEASURE_MEMORY
+    memory_monitor.sample();
+#endif
 
     //> Temporal candidate generation (spatial intersection + OR filter)
     GPU_time_collection.time_temporal_candidate_generation = generate_temporal_candidates();
     GPU_time_collection.total_time += GPU_time_collection.time_temporal_candidate_generation;
+#if MEASURE_MEMORY
+    memory_monitor.sample();
+#endif
     std::cout << "[Temporal GPU] Candidates after spatial+OR filter: " << h_temporal_candidate_count << std::endl;
 
     //> Combined NCC left-left + right-right (both must pass per candidate)
     GPU_time_collection.time_apply_ncc_filter = apply_ncc_filter();
     GPU_time_collection.total_time += GPU_time_collection.time_apply_ncc_filter;
+#if MEASURE_MEMORY
+    memory_monitor.sample();
+#endif
     std::cout << "[Temporal GPU] Candidates after NCC (left+right): " << h_match_count_after_ncc << std::endl;
 
     //> Combined SIFT left-left + right-right (both must pass per candidate)
     GPU_time_collection.time_apply_sift_filter = apply_sift_filter();
     GPU_time_collection.total_time += GPU_time_collection.time_apply_sift_filter;
+#if MEASURE_MEMORY
+    memory_monitor.sample();
+#endif
     std::cout << "[Temporal GPU] Candidates after SIFT (left+right): " << h_match_count_after_sift << std::endl;
 
     //> BNB-NCC (on SIFT survivors)
     GPU_time_collection.time_apply_bnb_ncc_filter = apply_bnb_ncc_filter();
     GPU_time_collection.total_time += GPU_time_collection.time_apply_bnb_ncc_filter;
+#if MEASURE_MEMORY
+    memory_monitor.sample();
+#endif
     std::cout << "[Temporal GPU] Candidates after BNB-NCC: " << h_match_count_after_bnb_ncc << std::endl;
 
     //> BNB-SIFT (on BNB-NCC survivors)
     GPU_time_collection.time_apply_bnb_sift_filter = apply_bnb_sift_filter();
     GPU_time_collection.total_time += GPU_time_collection.time_apply_bnb_sift_filter;
+#if MEASURE_MEMORY
+    memory_monitor.sample();
+#endif
     std::cout << "[Temporal GPU] Candidates after BNB-SIFT: " << h_match_count_after_bnb_sift << std::endl;
 
     //> 2D photometric refinement + GPU clustering (final stage)
     GPU_time_collection.time_apply_photometric_refine = apply_photometric_refine_and_cluster();
     GPU_time_collection.total_time += GPU_time_collection.time_apply_photometric_refine;
+#if MEASURE_MEMORY
+    memory_monitor.sample();
+#endif
     std::cout << "[Temporal GPU] Candidates after photometric refinement: " << h_match_count_after_refine  << std::endl;
     std::cout << "[Temporal GPU] Final matches after clustering:          " << h_match_count_after_cluster << std::endl;
 
     GPU_time_collection.time_apply_lowe_ratio_filter = apply_lowe_ratio_filter();
     GPU_time_collection.total_time += GPU_time_collection.time_apply_lowe_ratio_filter;
+#if MEASURE_MEMORY
+    memory_monitor.sample();
+    GPU_time_collection.memory = memory_monitor.peaks();
+#endif
     std::cout << "[Temporal GPU] Final matches after Lowe's ratio:      " << h_match_count_after_cluster << std::endl;
 
 #if SHOW_TIMING_BREAKDOWN

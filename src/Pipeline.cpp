@@ -7,6 +7,9 @@
 #include <Eigen/Dense>
 #include "Pipeline.h"
 #include "definitions.h"
+#include "gpu_settings.h"
+#include "gpu_kernels.h"
+#include "memory_stats.h"
 
 Pipeline::Pipeline(Dataset::Ptr dataset) : dataset_(dataset)
 {
@@ -25,6 +28,10 @@ Pipeline::Pipeline(Dataset::Ptr dataset) : dataset_(dataset)
     timing_statistics_file.open(timing_statistics_file_name);
     stereo_matches_timing_statistics_file.open(stereo_matches_timing_statistics_file_name);
     temporal_matches_timing_statistics_file.open(temporal_matches_timing_statistics_file_name);
+
+#if MEASURE_MEMORY
+    run_memory_monitor_.sample();
+#endif
 }
 
 bool Pipeline::Add_Stereo_Frame()
@@ -113,6 +120,10 @@ void Pipeline::prepare_Stereo_Images()
     std::cout << "Number of edges on the right image: " << dataset_->right_edges.size() << std::endl;
     current_frame.right_edges = dataset_->right_edges;
 
+#if MEASURE_MEMORY
+    run_memory_monitor_.sample();
+#endif
+
     timing_statistics_file << duration_left.count() + duration_right.count() << " ";
 
     //> Shift to the next status
@@ -127,6 +138,10 @@ void Pipeline::get_Stereo_Edge_Correspondences_GPU()
     left_cf_img_texture_ = prepare_for_GPU_engine->left_image_texture_;
     right_cf_img_texture_ = prepare_for_GPU_engine->right_image_texture_;
 
+#if MEASURE_MEMORY
+    run_memory_monitor_.sample();
+#endif
+
     //> Reset before allocate: frees the previous frame's GPU pipeline before this frame's cudaMalloc traffic (avoids a brief 2x VRAM spike).
     stereo_matches_engine_GPU.reset();
 
@@ -134,8 +149,22 @@ void Pipeline::get_Stereo_Edge_Correspondences_GPU()
 
     //> h_F, left_image_texture_, right_image_texture_ are created and passed to the stereo matches engine
     stereo_matches_engine_GPU = std::make_shared<Stereo_Matches_GPU_Pipeline>(dataset_, prepare_for_GPU_engine, current_frame, DEVICE_ID);
+
+#if MEASURE_MEMORY
+    run_memory_monitor_.sample();
+#endif
+
     stereo_GPU_times = stereo_matches_engine_GPU->get_stereo_edge_matching_GPU(stereo_current_frame_idx);
     collect_stereo_GPU_times.push_back(stereo_GPU_times);
+
+#if MEASURE_MEMORY
+    run_memory_monitor_.sample();
+    std::cout << "[Memory] After stereo GPU frame " << stereo_current_frame_idx << ": "
+              << "GPU peak " << MemoryMonitor::format_bytes(stereo_GPU_times.memory.gpu_peak_used_bytes)
+              << " / " << MemoryMonitor::format_bytes(stereo_GPU_times.memory.gpu_total_bytes)
+              << ", host RSS peak " << MemoryMonitor::format_bytes(stereo_GPU_times.memory.host_peak_rss_bytes)
+              << std::endl;
+#endif
 
     //> Host export and file write (We do not need this if we do GPU stereo + GPU temporal)
     stereo_matches_engine_GPU->retrieve_stereo_mates(current_frame, current_frame_stereo_edge_mates);
@@ -230,8 +259,21 @@ void Pipeline::get_Temporal_Edge_Correspondences_GPU()
         right_cf_img_texture_.texObj, left_cf_img_texture_.texObj,
         DEVICE_ID);
 
+#if MEASURE_MEMORY
+    run_memory_monitor_.sample();
+#endif
+
     //> Main temporal edge matching pipeline in GPU
     temporal_GPU_times = temporal_matches_engine_GPU->get_temporal_edge_matching_GPU();
+
+#if MEASURE_MEMORY
+    run_memory_monitor_.sample();
+    std::cout << "[Memory] After temporal GPU frame " << stereo_current_frame_idx << ": "
+              << "GPU peak " << MemoryMonitor::format_bytes(temporal_GPU_times.memory.gpu_peak_used_bytes)
+              << " / " << MemoryMonitor::format_bytes(temporal_GPU_times.memory.gpu_total_bytes)
+              << ", host RSS peak " << MemoryMonitor::format_bytes(temporal_GPU_times.memory.host_peak_rss_bytes)
+              << std::endl;
+#endif
 
     //> Retrieve final (kf_mate_idx, cf_mate_idx) pairs for downstream use
     gpu_final_quad_matches.clear();
@@ -243,18 +285,28 @@ void Pipeline::get_Temporal_Edge_Correspondences_GPU()
     collect_temporal_GPU_times.push_back(temporal_GPU_times);
     temporal_matches_engine_GPU.reset();
 
+#if MEASURE_MEMORY
+    run_memory_monitor_.sample();
+#endif
+
+    //> Simple frame jump strategy (promote CF to KF before releasing CF GPU buffers).
+    if (stereo_current_frame_idx == stereo_key_frame_idx + 5) {
+        set_Keyframe();
+        b_end_pipeline_for_debug = false;
+    } else {
+        //> CF stereo GPU buffers and textures are not needed again until the next stereo pass.
+        release_cf_stereo_gpu_buffers();
+        prepare_for_GPU_engine.reset();
+        left_cf_img_texture_  = {nullptr, 0};
+        right_cf_img_texture_ = {nullptr, 0};
+    }
+
     //> final_quad_matches[i].left_edge_idx  = index into keyframe_stereo_edge_mates
     //> final_quad_matches[i].right_edge_idx = index into current_frame_stereo_edge_mates
 
     //> Shift to the next status
     status_ = PipelineStatus::STATUS_IMG_PREPARATION;
     send_control_to_main = true;
-
-    //> Simple frame jump strategy
-    if (stereo_current_frame_idx == stereo_key_frame_idx + 5) {
-        set_Keyframe();
-        b_end_pipeline_for_debug = false;
-    }
 
     std::cout << "Current frame index: " << get_Current_Frame_Index() << " and keyframe index: " << get_Keyframe_Index() << std::endl;
     increment_Current_Stereo_Frame_Index();
@@ -412,59 +464,157 @@ bool Pipeline::try_propagate_multihop_veridical_quads()
 #endif
 }
 
+namespace {
+
+template<typename T>
+void safe_cuda_free(T*& ptr)
+{
+    if (ptr != nullptr) {
+        cudacheck_noexcept(cudaFree(ptr));
+        ptr = nullptr;
+    }
+}
+
+}  // namespace
+
+void Pipeline::release_cf_stereo_gpu_buffers()
+{
+    if (d_cf_stereo_matches != nullptr && d_cf_stereo_matches != d_kf_stereo_matches) {
+        safe_cuda_free(d_cf_stereo_matches);
+    } else {
+        d_cf_stereo_matches = nullptr;
+    }
+
+    if (d_cf_left_patches != nullptr && d_cf_left_patches != d_kf_left_patches) {
+        safe_cuda_free(d_cf_left_patches);
+    } else {
+        d_cf_left_patches = nullptr;
+    }
+
+    if (d_cf_right_patches != nullptr && d_cf_right_patches != d_kf_right_patches) {
+        safe_cuda_free(d_cf_right_patches);
+    } else {
+        d_cf_right_patches = nullptr;
+    }
+
+    if (d_cf_left_sift_descriptors != nullptr && d_cf_left_sift_descriptors != d_kf_left_sift_descriptors) {
+        safe_cuda_free(d_cf_left_sift_descriptors);
+    } else {
+        d_cf_left_sift_descriptors = nullptr;
+    }
+
+    num_of_cf_stereo_matches = 0;
+}
+
+void Pipeline::release_kf_stereo_gpu_buffers()
+{
+    safe_cuda_free(d_kf_stereo_matches);
+    safe_cuda_free(d_kf_left_patches);
+    safe_cuda_free(d_kf_right_patches);
+    safe_cuda_free(d_kf_left_sift_descriptors);
+    num_of_kf_stereo_matches = 0;
+
+    keyframe_prepare_for_GPU_engine.reset();
+    left_kf_img_texture_  = {nullptr, 0};
+    right_kf_img_texture_ = {nullptr, 0};
+}
+
+void Pipeline::set_CF_Stereo_Matches_GPU_Pointers()
+{
+    release_cf_stereo_gpu_buffers();
+
+    //> Set the stereo edge matches pointers from GPU
+    d_cf_stereo_matches = stereo_matches_engine_GPU->d_merged_refined_matches;
+    stereo_matches_engine_GPU->d_merged_refined_matches = nullptr;
+
+    //> Borrow compact left descriptors/patches in final stereo-match order for the next temporal pass.
+    d_cf_left_patches = stereo_matches_engine_GPU->d_final_left_patches;
+    stereo_matches_engine_GPU->d_final_left_patches = nullptr;
+    d_cf_right_patches = stereo_matches_engine_GPU->d_final_right_patches;
+    stereo_matches_engine_GPU->d_final_right_patches = nullptr;
+    d_cf_left_sift_descriptors = stereo_matches_engine_GPU->d_final_left_sift_descriptors;
+    stereo_matches_engine_GPU->d_final_left_sift_descriptors = nullptr;
+
+    //> Set the number of stereo edge correspondences from GPU
+    num_of_cf_stereo_matches = stereo_matches_engine_GPU->h_match_count_passing_NCC_filter;
+
+    //> Fallback so temporal GPU SIFT always has mate-ordered left SIFT for CF.
+    if (d_cf_left_sift_descriptors == nullptr && d_cf_stereo_matches != nullptr && num_of_cf_stereo_matches > 0) {
+        LOG_WARNING("d_cf_left_sift_descriptors is nullptr; attempting to extract mate-ordered left SIFT descriptors from stereo matches");
+        if (stereo_matches_engine_GPU->d_left_sift_descriptors != nullptr) {
+            extract_mate_ordered_left_sift_pipeline(
+                DEVICE_ID,
+                d_cf_stereo_matches,
+                stereo_matches_engine_GPU->d_left_sift_descriptors,
+                num_of_cf_stereo_matches,
+                d_cf_left_sift_descriptors);
+        }
+        if (d_cf_left_sift_descriptors == nullptr && left_cf_img_texture_.texObj != 0) {
+            const int cf_left_w = current_frame.left_image_undistorted.empty()
+                ? current_frame.left_image.cols
+                : current_frame.left_image_undistorted.cols;
+            const int cf_left_h = current_frame.left_image_undistorted.empty()
+                ? current_frame.left_image.rows
+                : current_frame.left_image_undistorted.rows;
+            precompute_mate_left_sift_from_texture_pipeline(
+                DEVICE_ID,
+                d_cf_stereo_matches,
+                left_cf_img_texture_.texObj,
+                cf_left_w, cf_left_h,
+                num_of_cf_stereo_matches,
+                d_cf_left_sift_descriptors);
+        }
+    }
+
+    std::cout << "[CHECK] Number of stereo edge matches: " << num_of_cf_stereo_matches
+              << " (CF left SIFT " << (d_cf_left_sift_descriptors != nullptr ? "ready" : "missing") << ")"
+              << std::endl;
+}
+
+void Pipeline::set_Keyframe()
+{
+    release_kf_stereo_gpu_buffers();
+
+    stereo_key_frame_idx = stereo_current_frame_idx;
+
+    keyframe = current_frame;
+    keyframe_stereo_edge_mates = current_frame_stereo_edge_mates;
+    keyframe_stereo_left_constructor = current_frame_stereo_left_constructor;
+    keyframe_stereo_left_constructor.stereo_frame = &keyframe;
+    keyframe_stereo_left_constructor.left_disparity_map = keyframe.left_disparity_map;
+    keyframe_stereo_left_constructor.right_disparity_map = keyframe.right_disparity_map;
+
+    //> For GPU pipelines: transfer CF ownership to KF (CF pointers cleared to avoid double-free).
+    keyframe_prepare_for_GPU_engine = prepare_for_GPU_engine;
+    left_kf_img_texture_  = left_cf_img_texture_;
+    right_kf_img_texture_ = right_cf_img_texture_;
+    d_kf_stereo_matches          = d_cf_stereo_matches;
+    d_kf_left_patches            = d_cf_left_patches;
+    d_kf_right_patches           = d_cf_right_patches;
+    d_kf_left_sift_descriptors   = d_cf_left_sift_descriptors;
+    num_of_kf_stereo_matches       = num_of_cf_stereo_matches;
+
+    d_cf_stereo_matches          = nullptr;
+    d_cf_left_patches            = nullptr;
+    d_cf_right_patches           = nullptr;
+    d_cf_left_sift_descriptors   = nullptr;
+    num_of_cf_stereo_matches     = 0;
+
+    current_frame = StereoFrame();
+    current_frame_stereo_edge_mates.clear();
+    current_frame_stereo_left_constructor.clean_up_vector_data_structures();
+}
+
 //> Destructor
 Pipeline::~Pipeline()
 {
     //> Texture memory is owned/released by Prepare_For_GPU_Pipeline instances.
-    left_kf_img_texture_ = {nullptr, 0};
-    right_kf_img_texture_ = {nullptr, 0};
-    left_cf_img_texture_ = {nullptr, 0};
+    left_cf_img_texture_  = {nullptr, 0};
     right_cf_img_texture_ = {nullptr, 0};
-    
-    //> free GPU memory
-    auto* released_kf_stereo_matches = d_kf_stereo_matches;
-    if (released_kf_stereo_matches != nullptr) {
-        cudacheck_noexcept( cudaFree(d_kf_stereo_matches) );
-        d_kf_stereo_matches = nullptr;
-    }
-    if (d_cf_stereo_matches != nullptr && d_cf_stereo_matches != released_kf_stereo_matches) {
-        cudacheck_noexcept( cudaFree(d_cf_stereo_matches) );
-        d_cf_stereo_matches = nullptr;
-    }
-    d_cf_stereo_matches = nullptr;
+    prepare_for_GPU_engine.reset();
 
-    auto* released_kf_left_patches = d_kf_left_patches;
-    if (released_kf_left_patches != nullptr) {
-        cudacheck_noexcept( cudaFree(d_kf_left_patches) );
-        d_kf_left_patches = nullptr;
-    }
-    if (d_cf_left_patches != nullptr && d_cf_left_patches != released_kf_left_patches) {
-        cudacheck_noexcept( cudaFree(d_cf_left_patches) );
-        d_cf_left_patches = nullptr;
-    }
-    d_cf_left_patches = nullptr;
-
-    auto* released_kf_right_patches = d_kf_right_patches;
-    if (released_kf_right_patches != nullptr) {
-        cudacheck_noexcept( cudaFree(d_kf_right_patches) );
-        d_kf_right_patches = nullptr;
-    }
-    if (d_cf_right_patches != nullptr && d_cf_right_patches != released_kf_right_patches) {
-        cudacheck_noexcept( cudaFree(d_cf_right_patches) );
-        d_cf_right_patches = nullptr;
-    }
-    d_cf_right_patches = nullptr;
-
-    auto* released_kf_left_sift_descriptors = d_kf_left_sift_descriptors;
-    if (released_kf_left_sift_descriptors != nullptr) {
-        cudacheck_noexcept( cudaFree(d_kf_left_sift_descriptors) );
-        d_kf_left_sift_descriptors = nullptr;
-    }
-    if (d_cf_left_sift_descriptors != nullptr && d_cf_left_sift_descriptors != released_kf_left_sift_descriptors) {
-        cudacheck_noexcept( cudaFree(d_cf_left_sift_descriptors) );
-        d_cf_left_sift_descriptors = nullptr;
-    }
-    d_cf_left_sift_descriptors = nullptr;
+    release_cf_stereo_gpu_buffers();
+    release_kf_stereo_gpu_buffers();
 
     timing_statistics_file.close();
     stereo_matches_timing_statistics_file.close();

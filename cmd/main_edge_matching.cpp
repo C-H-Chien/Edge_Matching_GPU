@@ -8,6 +8,7 @@
 #include "../include/Pipeline.h"
 #include "../include/Temporal_Matches.h"
 #include "../include/io.h"
+#include "../include/memory_stats.h"
 
 #if USE_GLOGS
 #include <glog/logging.h>
@@ -140,6 +141,9 @@ int main(int argc, char **argv)
 
 	//> Write all the stereo GPU timings to a file
 	std::string output_dir = dataset_->get_output_path();
+#if MEASURE_MEMORY
+	quad_vo_sys->sample_run_memory();
+#endif
 	std::string gpu_timings_filename = output_dir + "/gpu_timings_stereo_matches.txt";
 	std::ofstream gpu_timings_file(gpu_timings_filename);
 	for (size_t i = 0; i < quad_vo_sys->collect_stereo_GPU_times.size(); i++) {
@@ -172,6 +176,50 @@ int main(int argc, char **argv)
 		<< quad_vo_sys->collect_temporal_GPU_times[i].total_time << std::endl;
 	}
 	temporal_gpu_timings_file.close();
+
+#if MEASURE_MEMORY
+	const Memory_Usage_Statistics run_peak = quad_vo_sys->run_peak_memory();
+	std::cout << "\n[Memory] Run peak GPU used: "
+	          << MemoryMonitor::format_bytes(run_peak.gpu_peak_used_bytes)
+	          << " / " << MemoryMonitor::format_bytes(run_peak.gpu_total_bytes)
+	          << ", host RSS peak: "
+	          << MemoryMonitor::format_bytes(run_peak.host_peak_rss_bytes)
+	          << std::endl;
+
+	std::string stereo_mem_filename = output_dir + "/gpu_memory_stereo_matches.txt";
+	std::ofstream stereo_mem_file(stereo_mem_filename);
+	stereo_mem_file << "# gpu_peak_used_bytes gpu_total_bytes host_peak_rss_bytes\n";
+	for (size_t i = 0; i < quad_vo_sys->collect_stereo_GPU_times.size(); i++) {
+		const auto& mem = quad_vo_sys->collect_stereo_GPU_times[i].memory;
+		stereo_mem_file << mem.gpu_peak_used_bytes << " "
+		                << mem.gpu_total_bytes << " "
+		                << mem.host_peak_rss_bytes << "\n";
+	}
+	stereo_mem_file.close();
+
+	std::string temporal_mem_filename = output_dir + "/gpu_memory_temporal_matches.txt";
+	std::ofstream temporal_mem_file(temporal_mem_filename);
+	temporal_mem_file << "# gpu_peak_used_bytes gpu_total_bytes host_peak_rss_bytes\n";
+	for (size_t i = 0; i < quad_vo_sys->collect_temporal_GPU_times.size(); i++) {
+		const auto& mem = quad_vo_sys->collect_temporal_GPU_times[i].memory;
+		temporal_mem_file << mem.gpu_peak_used_bytes << " "
+		                  << mem.gpu_total_bytes << " "
+		                  << mem.host_peak_rss_bytes << "\n";
+	}
+	temporal_mem_file.close();
+
+	std::string run_mem_filename = output_dir + "/run_peak_memory.txt";
+	std::ofstream run_mem_file(run_mem_filename);
+	run_mem_file << "# gpu_peak_used_bytes gpu_total_bytes host_peak_rss_bytes\n";
+	run_mem_file << run_peak.gpu_peak_used_bytes << " "
+	             << run_peak.gpu_total_bytes << " "
+	             << run_peak.host_peak_rss_bytes << "\n";
+	run_mem_file.close();
+
+	std::cout << "[Memory] Wrote per-pass stats to " << stereo_mem_filename
+	          << " and " << temporal_mem_filename
+	          << "; run peak to " << run_mem_filename << std::endl;
+#endif
 
 	return 0;
 }
