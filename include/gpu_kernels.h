@@ -476,6 +476,114 @@ float temporal_photometric_refine_and_cluster_pipeline(
     cudaEvent_t                                         stop
 );
 
+//> Sort refined temporal matches by kf_mate_idx and merge nearby CF positions per KF index into
+//> d_clustered_matches (lazily allocated). Shared by the quad and the left-only temporal pipelines.
+//> (defined in temporal_photometric_refine_and_cluster.cu)
+void cluster_temporal_refined_matches(
+    Temporal_Refined_Match_GPU*       d_refined_matches,
+    int                               n_ref,
+    Temporal_Refined_Quad_Match_GPU*& d_clustered_matches,
+    int*&                             d_clustered_count,
+    int&                              h_clustered_count_out);
+
+// ==================================================================================================
+// Left-only (monocular) temporal edge matching: KF left edges <-> CF left edges, no stereo mates.
+// Match_by_Edge_Index: { left_edge_idx = kf_edge_idx, right_edge_idx = cf_edge_idx }.
+// Clustered outputs reuse Temporal_Refined_Quad_Match_GPU with the cf_right_* fields set to 0.
+// (all defined in temporal_edge_tracking_mono.cu)
+// ==================================================================================================
+
+//> For each KF edge, collect CF edges in the grid cells covering TEMPORAL_SEARCH_RADIUS_PIXELS
+//> that pass the orientation prefilter.
+float mono_temporal_candidate_generation_pipeline(
+    int                         device_id,
+    const Edge_GPU*             d_kf_edges,
+    const Edge_GPU*             d_cf_edges,
+    const int*                  d_cf_edge_indices,
+    const int*                  d_cf_cell_start_idx,
+    const int*                  d_cf_num_in_cell,
+    int                         grid_W,
+    int                         grid_H,
+    int                         num_kf_edges,
+    Match_by_Edge_Index*        d_candidates,
+    int*                        d_candidate_count,
+    int&                        h_candidate_count_out,
+    int                         max_candidates,
+    cudaEvent_t                 start,
+    cudaEvent_t                 stop);
+
+//> Left-left NCC with edge-indexed precomputed patches (outputs lazily allocated).
+float mono_temporal_ncc_filter_pipeline(
+    int                         device_id,
+    int                         &h_match_count_out,
+    const Match_by_Edge_Index*  d_candidates,
+    const Precomputed_Edge_Patches_Photometry* d_kf_patches,
+    const Precomputed_Edge_Patches_Photometry* d_cf_patches,
+    Match_by_Edge_Index*&       d_final_matches_out,
+    int*&                       d_final_count_out,
+    float*&                     d_ncc_scores_out,
+    int                         num_candidates,
+    int                         num_kf_edges,
+    int                         num_cf_edges,
+    cudaEvent_t                 start,
+    cudaEvent_t                 stop);
+
+//> Left-left SIFT with edge-indexed precomputed descriptors; carries NCC scores to survivors.
+float mono_temporal_sift_filter_pipeline(
+    int                         device_id,
+    int                         &h_match_count_out,
+    const Match_by_Edge_Index*  d_candidates,
+    const Precomputed_Edge_SIFT_Descriptor_GPU* d_kf_sift,
+    const Precomputed_Edge_SIFT_Descriptor_GPU* d_cf_sift,
+    Match_by_Edge_Index*&       d_final_matches_out,
+    int*&                       d_final_count_out,
+    float*&                     d_sift_scores_out,
+    const float*                d_ncc_scores_in,
+    float*&                     d_ncc_scores_out,
+    int                         num_candidates,
+    int                         num_kf_edges,
+    int                         num_cf_edges,
+    cudaEvent_t                 start,
+    cudaEvent_t                 stop);
+
+//> Best-nearly-best per KF edge. Best score per KF edge is reduced with atomics (O(candidates)),
+//> since raw-edge candidate counts are too large for a per-KF scan. Same keep rule as the quad BNB.
+float mono_temporal_bnb_filter_pipeline(
+    int                         device_id,
+    int                         &h_match_count_out,
+    const Match_by_Edge_Index*  d_candidates,
+    const float*                d_rank_scores,
+    const float*                d_carry_scores,
+    Match_by_Edge_Index*&       d_out_matches,
+    float*&                     d_out_carry_scores,
+    int*&                       d_out_count,
+    int                         num_candidates,
+    int                         num_kf_edges,
+    float                       ratio_threshold,
+    bool                        higher_is_better,
+    cudaEvent_t                 start,
+    cudaEvent_t                 stop);
+
+//> Left-only 2D Gauss-Newton photometric refinement + clustering (via cluster_temporal_refined_matches).
+float mono_temporal_photometric_refine_and_cluster_pipeline(
+    int                                         device_id,
+    const Match_by_Edge_Index*                  d_matches,
+    int                                         num_matches,
+    const Precomputed_Edge_Patches_Photometry*  d_kf_patches,
+    const Edge_GPU*                             d_kf_edges,
+    const Edge_GPU*                             d_cf_edges,
+    cudaTextureObject_t                         cf_tex,
+    int                                         cf_img_w,
+    int                                         cf_img_h,
+    Temporal_Refined_Match_GPU*&                d_refined_matches,
+    int*&                                       d_refined_count,
+    int&                                        h_refined_count_out,
+    Temporal_Refined_Quad_Match_GPU*&           d_clustered_matches,
+    int*&                                       d_clustered_count,
+    int&                                        h_clustered_count_out,
+    cudaEvent_t                                 start,
+    cudaEvent_t                                 stop);
+
 //> Lowe's ratio on clustered temporal quads: for KF mates with >1 quad, reject when
 //> best_rms/second_best_rms >= threshold; otherwise keep the lowest-RMS quad only.
 //> (defined in apply_temporal_quad_lowe_ratio_filter.cu)

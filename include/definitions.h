@@ -32,6 +32,14 @@
 #define TEMPORAL_BNB_NCC_THRESHOLD (0.8)
 #define TEMPORAL_BNB_SIFT_THRESHOLD (0.8)
 
+//> When true, skip stereo matching and track raw left-image edges over time (Temporal_Edge_Tracking_GPU).
+//> When false, run the stereo + temporal quad GPU pipeline.
+#define TEMPORAL_EDGE_TRACKING_ONLY (true)
+//> The current frame is promoted to keyframe every TEMPORAL_KEYFRAME_INTERVAL frames
+#define TEMPORAL_KEYFRAME_INTERVAL (5)
+//> Only edge tracks observed in at least this many views (frames, including the KF anchor) are written out
+#define MIN_EDGE_TRACK_LENGTH (4)
+
 #define EPIP_TANGENCY_DISPL_THRESH (3) //> in pixels
 #define LOCATION_PERTURBATION (0.4)    //> in pixels
 #define ORIENT_PERTURBATION (0.174533) //> in radians. 0.174533 is 10 degrees
@@ -89,6 +97,9 @@
 #define WRITE_GPU_STEREO_STAGE_SNAPSHOTS (0)
 //> ----------------------------------------------
 #define WRITE_FEATURES_TO_FILE (false)
+//> Write the left-image third-order edges of every frame to <output_dir>/toed_left_edges_frame_<idx>.txt
+//> (row i = edge index i, the edge_idx used in left-only edge tracks)
+#define WRITE_TOED_LEFT_EDGES_TO_FILE (true)
 #define WRITE_CORRESPONDENCES_TO_FILE (false)
 #define OPENCV_DISPLAY_FEATURES (false)
 #define OPENCV_DISPLAY_CORRESPONDENCES (false)

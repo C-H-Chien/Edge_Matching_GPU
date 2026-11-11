@@ -12,6 +12,7 @@ set (control_sources
         prepare_for_GPU.cpp
         Stereo_Matches_GPU.cpp
         Temporal_Matches_GPU.cpp
+        Temporal_Edge_Tracking_GPU.cpp
         Stereo_Matches_GPU_Validator.cpp
 )
 
@@ -34,6 +35,7 @@ if(ENABLE_CUDA)
         gpu_kernels/apply_temporal_quad_bnb_filter.cu
         gpu_kernels/temporal_photometric_refine_and_cluster.cu
         gpu_kernels/apply_temporal_quad_lowe_ratio_filter.cu
+        gpu_kernels/temporal_edge_tracking_mono.cu
         gpu_kernels/extract_mate_ordered_left_sift.cu
     )
 endif()

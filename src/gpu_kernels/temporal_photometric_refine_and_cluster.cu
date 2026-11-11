@@ -292,25 +292,41 @@ float temporal_photometric_refine_and_cluster_pipeline(
     cudacheck(cudaMemcpy(&h_refined_count_out, d_refined_count,
                          sizeof(int), cudaMemcpyDeviceToHost));
 
-    if (h_refined_count_out <= 0) {
-        cudacheck(cudaEventRecord(stop));
-        cudacheck(cudaEventSynchronize(stop));
-        float elapsed = 0.0f;
-        cudacheck(cudaEventElapsedTime(&elapsed, start, stop));
-        return elapsed;
-    }
+    cluster_temporal_refined_matches(d_refined_matches, h_refined_count_out,
+                                     d_clustered_matches, d_clustered_count, h_clustered_count_out);
+
+    float elapsed = 0.0f;
+    cudacheck(cudaEventRecord(stop));
+    cudacheck(cudaEventSynchronize(stop));
+    cudacheck(cudaEventElapsedTime(&elapsed, start, stop));
+    return elapsed;
+}
+
+// ---------------------------------------------------------------------------
+// cluster_temporal_refined_matches: sort by kf_mate_idx, segment, and merge
+// nearby CF positions within each segment (phases 2-4 of the refine pipeline).
+// ---------------------------------------------------------------------------
+void cluster_temporal_refined_matches(
+    Temporal_Refined_Match_GPU*       d_refined_matches,
+    int                               n_ref,
+    Temporal_Refined_Quad_Match_GPU*& d_clustered_matches,
+    int*&                             d_clustered_count,
+    int&                              h_clustered_count_out)
+{
+    h_clustered_count_out = 0;
+    if (n_ref <= 0 || d_refined_matches == nullptr)
+        return;
 
     // ------------------------------------------------------------------ //
     // Phase 2: sort by kf_mate_idx (ties broken by RMS)
     // ------------------------------------------------------------------ //
     thrust::device_ptr<Temporal_Refined_Match_GPU> d_ref_ptr(d_refined_matches);
-    thrust::sort(thrust::device, d_ref_ptr, d_ref_ptr + h_refined_count_out,
+    thrust::sort(thrust::device, d_ref_ptr, d_ref_ptr + n_ref,
                  sort_temporal_refined());
 
     // ------------------------------------------------------------------ //
     // Phase 3: mark segment heads  →  scan  →  get segment boundaries
     // ------------------------------------------------------------------ //
-    const int n_ref = h_refined_count_out;
 
     thrust::device_vector<int> d_flags(static_cast<size_t>(n_ref));
     {
@@ -336,13 +352,8 @@ float temporal_photometric_refine_and_cluster_pipeline(
         n_segs = last_seg + last_flag;
     }
 
-    if (n_segs <= 0) {
-        cudacheck(cudaEventRecord(stop));
-        cudacheck(cudaEventSynchronize(stop));
-        float elapsed = 0.0f;
-        cudacheck(cudaEventElapsedTime(&elapsed, start, stop));
-        return elapsed;
-    }
+    if (n_segs <= 0)
+        return;
 
     // Extended segment-start array with a sentinel at the end (= n_ref)
     thrust::device_vector<int> d_seg_starts_ext(static_cast<size_t>(n_segs + 1));
@@ -392,12 +403,6 @@ float temporal_photometric_refine_and_cluster_pipeline(
 
     cudacheck(cudaMemcpy(&h_clustered_count_out, d_clustered_count,
                          sizeof(int), cudaMemcpyDeviceToHost));
-
-    float elapsed = 0.0f;
-    cudacheck(cudaEventRecord(stop));
-    cudacheck(cudaEventSynchronize(stop));
-    cudacheck(cudaEventElapsedTime(&elapsed, start, stop));
-    return elapsed;
 }
 
 #endif // TEMPORAL_PHOTOMETRIC_REFINE_AND_CLUSTER_CU

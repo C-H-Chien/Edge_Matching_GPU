@@ -58,7 +58,11 @@ bool Pipeline::Add_Stereo_Frame()
             //> Get temporal edge correspondences (keyframe <-> current frame)
             LOG_STATUS("GET_TEMPORAL_EDGE_CORRESPONDENCES");
             // get_Temporal_Edge_Correspondences();
+#if TEMPORAL_EDGE_TRACKING_ONLY
+            get_Temporal_Edge_Tracks_Mono_GPU();
+#else
             get_Temporal_Edge_Correspondences_GPU();
+#endif
             break;
         case PipelineStatus::STATUS_SYSTEM_EXIT:
             //> System exit
@@ -80,6 +84,21 @@ void Pipeline::ProcessEdges(const cv::Mat &image, std::vector<Edge> &edges, bool
         TOED_right->get_Third_Order_Edges(image);
     }
     edges = (is_left) ? TOED_left->toed_edges : TOED_right->toed_edges;
+
+#if WRITE_TOED_LEFT_EDGES_TO_FILE
+    if (is_left) {
+        const std::string fname = dataset_->get_output_path() + "/third_order_edges/toed_left_edges_frame_" + std::to_string(stereo_current_frame_idx) + ".txt";
+        std::ofstream ofs(fname);
+        if (!ofs.is_open()) {
+            LOG_ERROR("ProcessEdges: cannot open " + fname);
+            return;
+        }
+        ofs << "x y orientation\n";
+        ofs.precision(8);
+        for (const Edge& e : edges)
+            ofs << e.location.x << " " << e.location.y << " " << e.orientation << "\n";
+    }
+#endif
 }
 
 void Pipeline::prepare_Stereo_Images()
@@ -111,6 +130,14 @@ void Pipeline::prepare_Stereo_Images()
     // std::cout << "Time taken by the third-order edge detector for the left image: " << duration_left.count() << " milliseconds" << std::endl;
     std::cout << "Number of edges on the left image: " << dataset_->left_edges.size() << std::endl;
     current_frame.left_edges = dataset_->left_edges;
+
+#if TEMPORAL_EDGE_TRACKING_ONLY
+    //> Left-only temporal tracking needs no right edges and no stereo matching
+    timing_statistics_file << duration_left.count() << " ";
+    status_ = PipelineStatus::STATUS_GET_TEMPORAL_EDGE_CORRESPONDENCES;
+    send_control_to_main = false;
+    return;
+#endif
 
     auto start_time_right = std::chrono::high_resolution_clock::now();
     ProcessEdges(right_cur_undistorted, dataset_->right_edges, false);
@@ -279,6 +306,9 @@ void Pipeline::get_Temporal_Edge_Correspondences_GPU()
     gpu_final_quad_matches.clear();
     temporal_matches_engine_GPU->retrieve_final_quad_matches(gpu_final_quad_matches);
 
+    //> Must run before the engine is reset: quads point into its host copy of the KF stereo mates
+    update_Edge_Tracks_from_GPU_Quads();
+
     //> output the results to files
     temporal_matches_engine_GPU->write_finalized_matches_to_file(stereo_key_frame_idx, stereo_current_frame_idx);
 
@@ -290,8 +320,10 @@ void Pipeline::get_Temporal_Edge_Correspondences_GPU()
 #endif
 
     //> Simple frame jump strategy (promote CF to KF before releasing CF GPU buffers).
-    if (stereo_current_frame_idx == stereo_key_frame_idx + 5) {
+    if (stereo_current_frame_idx == stereo_key_frame_idx + TEMPORAL_KEYFRAME_INTERVAL) {
         set_Keyframe();
+        kf_mate_to_track_ = std::move(cf_mate_to_track_);
+        cf_mate_to_track_.clear();
         b_end_pipeline_for_debug = false;
     } else {
         //> CF stereo GPU buffers and textures are not needed again until the next stereo pass.
@@ -311,6 +343,174 @@ void Pipeline::get_Temporal_Edge_Correspondences_GPU()
     std::cout << "Current frame index: " << get_Current_Frame_Index() << " and keyframe index: " << get_Keyframe_Index() << std::endl;
     increment_Current_Stereo_Frame_Index();
     std::cout << "Current frame index: " << get_Current_Frame_Index() << " and keyframe index: " << get_Keyframe_Index() << std::endl;
+}
+
+void Pipeline::get_Temporal_Edge_Tracks_Mono_GPU()
+{
+    //> Upload the CF left image/edges and precompute edge patches + SIFT; reused as-is if promoted to KF
+    Mono_Frame_GPU::Ptr cf_frame = std::make_shared<Mono_Frame_GPU>(current_frame, stereo_current_frame_idx, DEVICE_ID);
+
+    if (mono_kf_frame_ == nullptr) {
+        mono_kf_frame_ = cf_frame;
+        stereo_key_frame_idx = stereo_current_frame_idx;
+        LOG_INFO("Left-only temporal edge tracking: frame " + std::to_string(stereo_current_frame_idx) + " is the first keyframe");
+    }
+    else {
+        LOG_INFO("Finding left-only temporal edge correspondences (GPU) (" + std::to_string(get_Keyframe_Index()) + "->" + std::to_string(get_Current_Frame_Index()) + ")");
+
+        Temporal_Edge_Tracking_GPU_Timing_Statistics times;
+        std::vector<Temporal_Edge_Match> matches;
+        {
+            Temporal_Edge_Tracking_GPU_Pipeline engine(mono_kf_frame_, cf_frame, DEVICE_ID);
+            times = engine.get_temporal_edge_matching_GPU();
+            engine.retrieve_final_matches(matches);
+        }
+        times.time_precompute_cf_frame = cf_frame->time_precompute;
+        times.total_time += cf_frame->time_precompute;
+        collect_temporal_edge_tracking_GPU_times.push_back(times);
+
+#if MEASURE_MEMORY
+        std::cout << "[Memory] After temporal mono GPU frame " << stereo_current_frame_idx << ": "
+                  << "GPU peak " << MemoryMonitor::format_bytes(times.memory.gpu_peak_used_bytes)
+                  << " / " << MemoryMonitor::format_bytes(times.memory.gpu_total_bytes)
+                  << ", host RSS peak " << MemoryMonitor::format_bytes(times.memory.host_peak_rss_bytes)
+                  << std::endl;
+#endif
+
+        std::vector<Edge_Track_Link> links;
+        links.reserve(matches.size());
+        for (const auto& m : matches) {
+            if (m.kf_edge_idx < 0 || m.kf_edge_idx >= mono_kf_frame_->num_edges || m.cf_edge_idx < 0) continue;
+            const Edge_GPU& kf_edge = mono_kf_frame_->h_edges[static_cast<size_t>(m.kf_edge_idx)];
+            Edge_Track_Link link;
+            link.kf_obs.frame_idx        = stereo_key_frame_idx;
+            link.kf_obs.edge_idx         = m.kf_edge_idx;
+            link.kf_obs.left_x           = kf_edge.location_x;
+            link.kf_obs.left_y           = kf_edge.location_y;
+            link.kf_obs.left_orientation = kf_edge.orientation;
+            link.cf_obs.frame_idx        = stereo_current_frame_idx;
+            link.cf_obs.edge_idx         = m.cf_edge_idx;
+            link.cf_obs.left_x           = m.cf_x;
+            link.cf_obs.left_y           = m.cf_y;
+            link.cf_obs.left_orientation = m.cf_orientation;
+            link.cf_obs.photometric_rms  = m.photometric_rms;
+            links.push_back(link);
+        }
+        update_Edge_Tracks(links);
+
+        if (stereo_current_frame_idx >= stereo_key_frame_idx + TEMPORAL_KEYFRAME_INTERVAL) {
+            mono_kf_frame_ = cf_frame;
+            stereo_key_frame_idx = stereo_current_frame_idx;
+            kf_mate_to_track_ = std::move(cf_mate_to_track_);
+            cf_mate_to_track_.clear();
+        }
+    }
+
+#if MEASURE_MEMORY
+    run_memory_monitor_.sample();
+#endif
+
+    increment_Current_Stereo_Frame_Index();
+    status_ = PipelineStatus::STATUS_IMG_PREPARATION;
+    send_control_to_main = true;
+}
+
+void Pipeline::update_Edge_Tracks_from_GPU_Quads()
+{
+    std::vector<Edge_Track_Link> links;
+    links.reserve(gpu_final_quad_matches.size());
+    for (const auto& q : gpu_final_quad_matches) {
+        if (q.kf_mate_idx < 0 || q.cf_mate_idx < 0 || q.kf_stereo_mate == nullptr) continue;
+        const Merged_Refined_Stereo_Match_GPU& kf_mate = *q.kf_stereo_mate;
+        Edge_Track_Link link;
+        link.kf_obs.frame_idx         = stereo_key_frame_idx;
+        link.kf_obs.edge_idx          = q.kf_mate_idx;
+        link.kf_obs.left_x            = kf_mate.left_location_x;
+        link.kf_obs.left_y            = kf_mate.left_location_y;
+        link.kf_obs.left_orientation  = kf_mate.left_orientation;
+        link.kf_obs.right_x           = kf_mate.merged_right_x;
+        link.kf_obs.right_y           = kf_mate.merged_right_y;
+        link.kf_obs.right_orientation = kf_mate.merged_right_orientation;
+        link.cf_obs.frame_idx         = stereo_current_frame_idx;
+        link.cf_obs.edge_idx          = q.cf_mate_idx;
+        link.cf_obs.left_x            = q.cf_left_x;
+        link.cf_obs.left_y            = q.cf_left_y;
+        link.cf_obs.left_orientation  = q.cf_left_orientation;
+        link.cf_obs.right_x           = q.cf_right_x;
+        link.cf_obs.right_y           = q.cf_right_y;
+        link.cf_obs.right_orientation = q.cf_right_orientation;
+        link.cf_obs.photometric_rms   = q.photometric_rms;
+        links.push_back(link);
+    }
+    update_Edge_Tracks(links);
+}
+
+void Pipeline::update_Edge_Tracks(const std::vector<Edge_Track_Link>& links)
+{
+    cf_mate_to_track_.clear();
+
+    //> Enforce 1-1 on the CF side: Lowe's ratio is unique per KF edge only, so several KF edges may claim
+    //> the same CF edge. Keep the lowest photometric RMS link per CF edge.
+    std::unordered_map<int, size_t> best_link_per_cf;
+    best_link_per_cf.reserve(links.size());
+    for (size_t i = 0; i < links.size(); ++i) {
+        const int cf_idx = links[i].cf_obs.edge_idx;
+        auto it = best_link_per_cf.find(cf_idx);
+        if (it == best_link_per_cf.end() || links[i].cf_obs.photometric_rms < links[it->second].cf_obs.photometric_rms)
+            best_link_per_cf[cf_idx] = i;
+    }
+
+    size_t num_new_tracks = 0;
+    for (const auto& entry : best_link_per_cf) {
+        const Edge_Track_Link& link = links[entry.second];
+
+        int track_id;
+        auto it = kf_mate_to_track_.find(link.kf_obs.edge_idx);
+        if (it != kf_mate_to_track_.end()) {
+            track_id = it->second;
+        }
+        else {
+            //> New track anchored at the keyframe edge
+            track_id = static_cast<int>(edge_tracks_.size());
+            Edge_Track track;
+            track.id = track_id;
+            track.observations.push_back(link.kf_obs);
+            edge_tracks_.push_back(std::move(track));
+            kf_mate_to_track_[link.kf_obs.edge_idx] = track_id;
+            ++num_new_tracks;
+        }
+
+        edge_tracks_[track_id].observations.push_back(link.cf_obs);
+        cf_mate_to_track_[link.cf_obs.edge_idx] = track_id;
+    }
+
+    std::cout << "[Edge Tracks] Frame " << stereo_current_frame_idx << ": " << best_link_per_cf.size()
+              << " observations (" << num_new_tracks << " new tracks), " << edge_tracks_.size() << " tracks total" << std::endl;
+}
+
+void Pipeline::write_edge_tracks_to_file(size_t min_track_length) const
+{
+    const std::string fname = dataset_->get_output_path() + "/gpu_edge_tracks.txt";
+    std::ofstream ofs(fname);
+    if (!ofs.is_open()) {
+        LOG_ERROR("write_edge_tracks_to_file: cannot open " + fname);
+        return;
+    }
+
+    ofs << "track_id frame_idx edge_idx left_x left_y left_orientation\n";
+    ofs.precision(8);
+
+    size_t num_written = 0;
+    for (const auto& track : edge_tracks_) {
+        if (track.observations.size() < min_track_length) continue;
+        for (const auto& obs : track.observations) {
+            ofs << track.id << " " << obs.frame_idx << " " << obs.edge_idx << " "
+                << obs.left_x << " " << obs.left_y << " " << obs.left_orientation << "\n";
+        }
+        ++num_written;
+    }
+    ofs.close();
+    std::cout << "[Edge Tracks] Wrote " << num_written << " tracks (length >= " << min_track_length << ") to " << fname << std::endl;
 }
 
 void Pipeline::get_Temporal_Edge_Correspondences()

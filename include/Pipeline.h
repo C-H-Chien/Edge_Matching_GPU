@@ -2,6 +2,7 @@
 #define PIPELINE_H
 
 #include <deque>
+#include <unordered_map>
 #include <opencv2/features2d.hpp>
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
@@ -21,6 +22,7 @@
 #include "prepare_for_GPU.h"
 #include "Stereo_Matches_GPU.h"
 #include "Temporal_Matches_GPU.h"
+#include "Temporal_Edge_Tracking_GPU.h"
 #include "memory_stats.h"
 
 //> status of the visual odometry pipeline
@@ -30,6 +32,31 @@ enum class PipelineStatus
     STATUS_GET_STEREO_EDGE_CORRESPONDENCES,
     STATUS_GET_TEMPORAL_EDGE_CORRESPONDENCES,
     STATUS_SYSTEM_EXIT
+};
+
+//> One observation of an edge track in a given frame. In the stereo (quad) mode it is a stereo edge mate;
+//> in the left-only mode (TEMPORAL_EDGE_TRACKING_ONLY) it is a left edge and the right_* fields are 0.
+struct Edge_Track_Observation
+{
+    size_t frame_idx = 0;
+    int edge_idx = -1;              //> index into that frame's GPU stereo mates, or left edges in left-only mode
+    float left_x = 0.f, left_y = 0.f, left_orientation = 0.f;
+    float right_x = 0.f, right_y = 0.f, right_orientation = 0.f;
+    float photometric_rms = 0.f;    //> 0 for the keyframe anchor observation
+};
+
+//> Edge feature track: correspondences of one edge across multiple frames
+struct Edge_Track
+{
+    int id = -1;
+    std::vector<Edge_Track_Observation> observations;
+};
+
+//> One KF -> CF temporal match used to extend tracks
+struct Edge_Track_Link
+{
+    Edge_Track_Observation kf_obs;
+    Edge_Track_Observation cf_obs;
 };
 
 class Pipeline
@@ -57,6 +84,9 @@ public:
     //> GPU version
     void get_Stereo_Edge_Correspondences_GPU();
     void get_Temporal_Edge_Correspondences_GPU();
+
+    //> GPU left-only temporal edge tracking (no stereo); used when TEMPORAL_EDGE_TRACKING_ONLY is true
+    void get_Temporal_Edge_Tracks_Mono_GPU();
 
     //> setters
     void set_Current_Stereo_Frame_Index(size_t frame_idx) { stereo_current_frame_idx = frame_idx; }
@@ -93,8 +123,13 @@ public:
 
     std::vector<Stereo_Matches_GPU_Timing_Statistics>   collect_stereo_GPU_times;
     std::vector<Temporal_Matches_GPU_Timing_Statistics> collect_temporal_GPU_times;
+    std::vector<Temporal_Edge_Tracking_GPU_Timing_Statistics> collect_temporal_edge_tracking_GPU_times;
     Memory_Usage_Statistics run_peak_memory() const { return run_memory_monitor_.peaks(); }
     void sample_run_memory() { run_memory_monitor_.sample(); }
+
+    //> Edge feature tracks built from the GPU temporal quads
+    const std::vector<Edge_Track>& get_Edge_Tracks() const { return edge_tracks_; }
+    void write_edge_tracks_to_file(size_t min_track_length = 2) const;
 
     //> for debugging purpose
     bool b_end_pipeline_for_debug = false;
@@ -210,6 +245,18 @@ private:
 
     //> GPU temporal pipeline: finalized quads (refined CF geometry + KF mate snapshot), ranked per gpu_settings.h
     std::vector<Temporal_Refined_Quad_Match> gpu_final_quad_matches;
+
+    //> Edge feature tracks. kf_mate_to_track_ maps the current keyframe's stereo mate index to a track id;
+    //> cf_mate_to_track_ is the same map for the latest current frame and becomes kf_mate_to_track_ on KF promotion
+    //> (set_Keyframe keeps the stereo mate order, so CF mate indices become KF mate indices).
+    std::vector<Edge_Track> edge_tracks_;
+    std::unordered_map<int, int> kf_mate_to_track_;
+    std::unordered_map<int, int> cf_mate_to_track_;
+    void update_Edge_Tracks_from_GPU_Quads();
+    void update_Edge_Tracks(const std::vector<Edge_Track_Link>& links);
+
+    //> Left-only temporal edge tracking: device data of the current keyframe
+    Mono_Frame_GPU::Ptr mono_kf_frame_ = nullptr;
 
     //> Rolling buffer of adjacent-frame veridical quads for intersecting chains (source -> … -> dest).
     struct AdjacentQuadSnapshot

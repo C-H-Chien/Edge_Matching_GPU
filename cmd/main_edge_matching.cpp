@@ -139,6 +139,8 @@ int main(int argc, char **argv)
 		}
 	}
 
+	quad_vo_sys->write_edge_tracks_to_file(MIN_EDGE_TRACK_LENGTH);
+
 	//> Write all the stereo GPU timings to a file
 	std::string output_dir = dataset_->get_output_path();
 #if MEASURE_MEMORY
@@ -177,6 +179,26 @@ int main(int argc, char **argv)
 	}
 	temporal_gpu_timings_file.close();
 
+	//> Write all the left-only temporal edge tracking GPU timings to a file
+	if (!quad_vo_sys->collect_temporal_edge_tracking_GPU_times.empty()) {
+		std::string mono_gpu_timings_filename = output_dir + "/gpu_timings_temporal_edge_tracking.txt";
+		std::ofstream mono_gpu_timings_file(mono_gpu_timings_filename);
+		mono_gpu_timings_file << "# precompute_cf_frame build_cf_spatial_grid candidate_generation ncc sift bnb_ncc bnb_sift photometric_refine lowe_ratio total (ms)\n";
+		for (const auto& t : quad_vo_sys->collect_temporal_edge_tracking_GPU_times) {
+			mono_gpu_timings_file << t.time_precompute_cf_frame << " "
+			<< t.time_build_cf_spatial_grid << " "
+			<< t.time_candidate_generation << " "
+			<< t.time_apply_ncc_filter << " "
+			<< t.time_apply_sift_filter << " "
+			<< t.time_apply_bnb_ncc_filter << " "
+			<< t.time_apply_bnb_sift_filter << " "
+			<< t.time_apply_photometric_refine << " "
+			<< t.time_apply_lowe_ratio_filter << " "
+			<< t.total_time << std::endl;
+		}
+		mono_gpu_timings_file.close();
+	}
+
 #if MEASURE_MEMORY
 	const Memory_Usage_Statistics run_peak = quad_vo_sys->run_peak_memory();
 	std::cout << "\n[Memory] Run peak GPU used: "
@@ -207,6 +229,18 @@ int main(int argc, char **argv)
 		                  << mem.host_peak_rss_bytes << "\n";
 	}
 	temporal_mem_file.close();
+
+	if (!quad_vo_sys->collect_temporal_edge_tracking_GPU_times.empty()) {
+		std::string mono_mem_filename = output_dir + "/gpu_memory_temporal_edge_tracking.txt";
+		std::ofstream mono_mem_file(mono_mem_filename);
+		mono_mem_file << "# gpu_peak_used_bytes gpu_total_bytes host_peak_rss_bytes\n";
+		for (const auto& t : quad_vo_sys->collect_temporal_edge_tracking_GPU_times) {
+			mono_mem_file << t.memory.gpu_peak_used_bytes << " "
+			              << t.memory.gpu_total_bytes << " "
+			              << t.memory.host_peak_rss_bytes << "\n";
+		}
+		mono_mem_file.close();
+	}
 
 	std::string run_mem_filename = output_dir + "/run_peak_memory.txt";
 	std::ofstream run_mem_file(run_mem_filename);
